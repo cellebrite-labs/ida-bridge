@@ -32,9 +32,6 @@ def _parse_netstat_listening_pid(stdout: str) -> int | None:
         if len(tokens) < 4 or "LISTENING" not in (token.upper() for token in tokens):
             continue
 
-        # The local endpoint is the second column. rpartition handles both
-        # 127.0.0.1:8765 and [::]:8765 without matching nearby ports such as
-        # 87650.
         local_endpoint = tokens[1]
         _, separator, port = local_endpoint.rpartition(":")
         if not separator or port != wanted_port:
@@ -103,11 +100,9 @@ def cmd_start(args: argparse.Namespace) -> int:
     env["IDA_BRIDGE_LOG_FILE"] = str(LOG_FILE)
 
     print(f"Starting server... (logging to {LOG_FILE})")
-    # Truncate per boot: this holds only the current run's raw output (mostly empty).
+
     with open(OUT_FILE, "w") as out:
         if os.name == "nt":
-            # CREATE_NO_WINDOW keeps the server from popping a console.
-            # (start_new_session is invalid on Windows.)
             popen_kwargs: dict = {"creationflags": subprocess.CREATE_NO_WINDOW}
         else:
             popen_kwargs = {"start_new_session": True}
@@ -122,9 +117,6 @@ def cmd_start(args: argparse.Namespace) -> int:
     time.sleep(0.5)
     listener_pid = get_server_pid()
     if listener_pid:
-        # A Windows venv python.exe is a redirector that remains as the parent
-        # of the base interpreter. Popen sees the redirector PID, while the base
-        # interpreter owns the socket. Always report the authoritative listener.
         print(f"Server started (PID: {listener_pid})")
         return 0
 
@@ -139,6 +131,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
         return 0
 
     print(f"Stopping server (PID: {pid})...")
+    
     # Cross-platform terminate: SIGTERM → wait → SIGKILL on POSIX; hard
     # TerminateProcess on Windows (graceful stop there would be the bridge quit RPC).
     proc.terminate_pid(pid)

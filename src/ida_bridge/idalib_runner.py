@@ -10,8 +10,8 @@ from typing import Any, NoReturn
 
 try:
     import fcntl
-except ImportError:  # pragma: no cover - Windows has no fcntl
-    fcntl = None  # type: ignore[assignment]
+except ImportError:
+    fcntl = None
 
 import idapro
 
@@ -66,7 +66,7 @@ def _is_locked(path: Path) -> bool:
         try:
             fd = os.open(str(path), os.O_RDONLY)
         except PermissionError:
-            return True  # sharing violation: held by another process (IDA)
+            return True
         except OSError:
             return False
         os.close(fd)

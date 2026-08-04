@@ -6,7 +6,7 @@ import os
 import signal
 import time
 
-if os.name == "nt":  # pragma: no branch - definitions are platform-specific
+if os.name == "nt":
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     _kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -101,9 +101,9 @@ def _terminate_pid_windows(pid: int, *, timeout_s: float) -> str:
     if not is_pid_alive(pid):
         return "already_dead"
 
-    handle = _kernel32.OpenProcess(0x0001, False, pid)  # PROCESS_TERMINATE
+    handle = _kernel32.OpenProcess(0x0001, False, pid) # PROCESS_TERMINATE
     if not handle:
-        # No permission to open it; treat as already gone (best-effort).
+        # failed/no permission, just say its dead
         return "already_dead"
     try:
         _kernel32.TerminateProcess(handle, 1)

@@ -84,17 +84,10 @@ def find_ida_app_bundle_macos() -> Path:
     return best
 
 
-# What the GUI launcher is called in a Windows IDA install dir (64-bit first:
-# IDA 9.x ships both, and ida64 is the default for new databases on x64 hosts).
 _IDA_EXE_NAMES = ("ida64.exe", "ida.exe")
 
 
 def _parse_dir_version(dirname: str) -> tuple[int, ...] | None:
-    """Parse a ``X.Y[.Z]`` version substring out of an install dir name.
-
-    E.g. ``IDA Professional 9.3`` -> ``(9, 3)``. Returns None if absent (the
-    dir name carries no version at all).
-    """
     m = re.search(r"([0-9]+(?:\.[0-9]+)*)", dirname)
     if not m:
         return None
@@ -134,7 +127,7 @@ def find_ida_windows() -> Path:
                 exe = entry / name
                 if exe.is_file():
                     candidates.append((_parse_dir_version(entry.name), exe))
-                    break  # only the preferred launcher per dir
+                    break
 
     if not candidates:
         raise SystemExit(
