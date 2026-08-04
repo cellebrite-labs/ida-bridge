@@ -74,7 +74,14 @@ Some behavior tests reference a specific named binary from `bins/` instead of th
 
 ### Fixture generation
 
-Requires `clang`/`clang++`/`lipo`/`strip` and a running bridge server that `exec-idb` connects to.
+Requires a C compiler toolchain and a running bridge server that `exec-idb` connects to.
+
+- macOS: `clang`/`clang++`/`lipo`/`strip` (Xcode command line tools), including the
+  fat-Mach-O (`lipo`) and dyld-cache fixtures.
+- Windows: use `clang-cl`/`cl` (MSVC-style) instead of `clang` and drop `lipo` (no fat
+  binaries on Windows). macOS-format fixtures (fat Mach-O, DYLD cache) are inherently
+  macOS files and are not built on Windows; the generic SQL e2e suite runs against the
+  Windows-built fixtures.
 
 `tests/fixtures/build.py` is the fixture generator; a fresh checkout runs it once to populate `idbs/`:
 
@@ -125,6 +132,7 @@ Useful fixture types to add:
 
 ### Coverage gaps
 
+- Windows fixture generation (MSVC-style compile, no fat Mach-O / dyld cache) — see fixture generation above
 - raw blob/shellcode loader path
 - 32-bit `.idb` open path
 - IDA 8.x `.i64` migration/open path

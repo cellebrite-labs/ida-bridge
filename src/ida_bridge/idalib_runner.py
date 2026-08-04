@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 # IMPORTANT: idalib requires `import idapro` to be the first import.
 import argparse
-import fcntl
 import logging
 import os
 from pathlib import Path
 import signal
 import sys
 from typing import Any, NoReturn
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows has no fcntl
+    fcntl = None  # type: ignore[assignment]
 
 import idapro
 
@@ -43,15 +47,29 @@ _IDB_COMPANION_SUFFIXES = (".id0", ".id1", ".id2", ".nam", ".til")
 
 
 def _is_locked(path: Path) -> bool:
-    """True if *path* is currently held under an exclusive OS advisory lock (flock).
+    """True if *path* is currently held under an exclusive OS lock.
 
-    Only ``BlockingIOError`` (lock unavailable) counts as "locked": any other
-    failure while probing propagates rather than silently treating an unrelated
-    error (e.g. a filesystem that doesn't support flock) as "not locked" and
-    letting a caller proceed to delete something it couldn't actually verify
-    was safe to delete.
+    POSIX: ``fcntl.flock`` -- only ``BlockingIOError`` (lock unavailable) counts
+    as "locked"; any other failure while probing propagates rather than silently
+    treating an unrelated error (e.g. a filesystem that doesn't support flock)
+    as "not locked" and letting a caller proceed to delete something it couldn't
+    actually verify was safe to delete.
+
+    Windows: IDA opens its database companions (``.id0/.id1/.id2/.nam/.til``)
+    with share mode 0 (deny all), so an open attempt on a file another process
+    holds fails with a sharing violation (``PermissionError``). Only that case
+    counts as "locked"; other open errors fall through as "not locked".
     """
     if not path.exists():
+        return False
+    if os.name == "nt":
+        try:
+            fd = os.open(str(path), os.O_RDONLY)
+        except PermissionError:
+            return True  # sharing violation: held by another process (IDA)
+        except OSError:
+            return False
+        os.close(fd)
         return False
     try:
         fd = os.open(str(path), os.O_RDONLY)
@@ -159,6 +177,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=10.0,
         type=float,
         help="Fail if the bridge handshake does not complete within this timeout",
+    )
+    parser.add_argument(
+        "--skip-auto-wait",
+        action="store_true",
+        help="Connect without draining IDA's auto-analysis queue (for poisoned or intentionally incomplete IDBs)",
     )
 
     ns = parser.parse_args(argv)
@@ -276,9 +299,13 @@ def run_worker(args: argparse.Namespace) -> int:
     handler: RequestHandler | None = None
 
     try:
-        # Wait for analysis before advertising ourselves to the bridge.
-        log.info("waiting for auto-analysis: %s", idb_path)
-        ida_auto.auto_wait()
+        # Wait for analysis before advertising ourselves to the bridge unless
+        # explicitly bypassed for a poisoned/non-terminating analysis queue.
+        if args.skip_auto_wait:
+            log.warning("skipping auto-analysis wait: %s", idb_path)
+        else:
+            log.info("waiting for auto-analysis: %s", idb_path)
+            ida_auto.auto_wait()
 
         if signal_shutdown:
             return 0

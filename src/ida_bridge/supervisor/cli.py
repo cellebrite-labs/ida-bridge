@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     p_start.add_argument(
         "--ida",
         default=None,
-        help="Path to an IDA .app bundle (default: auto-detect latest via Spotlight)",
+        help="Path to an IDA .app bundle (macOS) or ida.exe (Windows); default: auto-detect",
     )
     p_start.add_argument(
         "--wait-s",
@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     p_idalib.add_argument(
         "--python",
         default=None,
-        help="Path to a python with idapro + deps installed (default: ~/.idapro/venv/bin/python3)",
+        help="Path to a python with idapro + deps installed (default: ~/.idapro/venv/bin/python3 on macOS, ~/.idapro/venv/Scripts/python.exe on Windows)",
     )
     g2 = p_idalib.add_mutually_exclusive_group(required=True)
     g2.add_argument("--idb", help="Path to an existing IDB (.i64/.idb)")
@@ -78,6 +78,11 @@ def main(argv: list[str] | None = None) -> int:
         default=300.0,
         type=float,
         help="Max seconds to wait for analysis + bridge connect (default: 300s)",
+    )
+    p_idalib.add_argument(
+        "--skip-auto-wait",
+        action="store_true",
+        help="Connect without waiting for auto-analysis (for poisoned or intentionally incomplete IDBs)",
     )
     p_idalib.set_defaults(func=cmd_start_idalib)
 

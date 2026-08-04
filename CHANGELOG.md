@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+- Windows support (IDA 9.x): `server`, `exec`, `exec-idb`, `supervisor start-idalib/start-ui/stop/save` now work on Windows. Platform-aware log dir, Windows process layer (`OpenProcess`/`TerminateProcess`), `fcntl`-free lock probe, `netstat`-based server PID detection, and a Windows IDA resolver. `ida-setup` remains macOS-only; see README "Windows setup" for the manual flow.
+
+### Changed
+- macOS-only prerequisites/instructions in `README.md` were made OS-agnostic; added a Windows setup section.
+- `log_dir()` default is now platform-aware (`~/Library/Logs/ida-bridge` on macOS, `%LOCALAPPDATA%\ida-bridge\logs` on Windows); `IDA_BRIDGE_LOG_DIR` still overrides.
+
 ## [0.4.2] - 2026-08-03
 
 ### Changed

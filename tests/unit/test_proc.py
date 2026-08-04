@@ -11,6 +11,7 @@ from ida_bridge.proc import is_pid_alive, terminate_pid, wait_for_exit
 
 
 class TestIsPidAlive:
+    @pytest.mark.skipif(sys.platform == "win32", reason="zombies are POSIX-only")
     def test_returns_false_for_zombie_child(self) -> None:
         """is_pid_alive must detect zombie (exited but un-reaped) children."""
         child = subprocess.Popen([sys.executable, "-c", ""])
@@ -53,7 +54,11 @@ class TestTerminatePid:
     def test_sigterm(self) -> None:
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         try:
-            assert terminate_pid(child.pid, timeout_s=5.0) == "sigterm"
+            # Windows has no SIGTERM: terminate_pid is a hard TerminateProcess
+            # and reports "sigkill". POSIX gets a graceful SIGTERM.
+            expected = "sigkill" if sys.platform == "win32" else "sigterm"
+            assert terminate_pid(child.pid, timeout_s=5.0) == expected
+            assert not is_pid_alive(child.pid)
         finally:
             if child.poll() is None:
                 child.kill()

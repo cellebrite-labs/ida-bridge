@@ -19,7 +19,10 @@ from ida_bridge.server import BridgeServer
 # Paths
 # ---------------------------------------------------------------------------
 
-IDALIB_VENV_PYTHON = Path.home() / ".idapro" / "venv" / "bin" / "python3"
+if os.name == "nt":
+    IDALIB_VENV_PYTHON = Path.home() / ".idapro" / "venv" / "Scripts" / "python.exe"
+else:
+    IDALIB_VENV_PYTHON = Path.home() / ".idapro" / "venv" / "bin" / "python3"
 IDALIB_RUNNER = Path(__file__).resolve().parent.parent.parent / "src" / "ida_bridge" / "idalib_runner.py"
 
 

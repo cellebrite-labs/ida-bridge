@@ -10,11 +10,13 @@ Agent skill and references: `skills/ida-bridge/`.
 ## Prerequisites
 
 - IDA Pro >= 9.0
-- macOS
+- macOS **or** Windows
 - [ida-docs](https://github.com/cellebrite-labs/ida-docs) agent skill (for agent-authored IDAPython)
-- [ida-setup](https://github.com/cellebrite-labs/ida-setup) (recommended on macOS; automates the manual setup below)
+- [ida-setup](https://github.com/cellebrite-labs/ida-setup) (macOS only; automates the manual setup below)
 
 ## Installation
+
+### macOS
 
 ```bash
 # clone repo
@@ -32,10 +34,17 @@ pi install .
 pi install https://github.com/cellebrite-labs/ida-docs
 ```
 
+### Windows
+
+`ida-setup` is macOS-only, so on Windows the setup is manual (the four pieces
+below are the same ones the macOS Manual setup covers; the Windows-specific
+steps are under [Windows setup](#windows-setup)).
+
 ## Manual setup
 
-`ida-setup` is the easy mode, it sets up a venv in `~/.idapro/venv` and makes IDA use it.
+On macOS, `ida-setup` is the easy mode: it sets up a venv in `~/.idapro/venv` and makes IDA use it.
 The same venv is used for IDA UI and IDA headless and everything just works.
+On Windows the steps below are all manual; see [Windows setup](#windows-setup) for the exact commands.
 Otherwise these are the things you need to set up.
 
 1. host CLI, so the agent can run `ida-bridge` commands
@@ -79,7 +88,7 @@ ida-bridge contains a runner that uses `idalib` to implement headless interactio
 The runner needs to import and use both `ida_bridge` and `idapro` (idalib package).
 Hence when running headless runner, it has to know which python to use.
 
-By default it uses `~/.idapro/venv/bin/python3`.
+By default it uses `~/.idapro/venv/bin/python3` on macOS (`~/.idapro/venv/Scripts/python.exe` on Windows).
 Having a single venv to be used by headless and IDA UI is convenient to reuse packages/plugins, etc.
 You can point the runner to a different python with `--python` argument when running `exec-idb` or `start-idalib`.
 
@@ -93,6 +102,68 @@ This same python also needs `ida_bridge` itself: `<IDA headless python> -m pip i
 Validate by running: `ida-bridge supervisor start-idalib --idb path/to/idb`.
 On success it prints client id, idb path, PID and log path.
 On failure log path is printed, check it out for troubleshooting.
+
+## Windows setup
+
+These steps replace the macOS `ida-setup` flow. All commands are PowerShell.
+`$env:USERPROFILE` is `C:\Users\<you>`; IDA's per-user dir here is
+`$env:APPDATA\Hex-Rays\IDA Pro\` (the Windows equivalent of `~/.idapro/`).
+
+1. **Host CLI** — install the `ida-bridge` CLI:
+
+   ```powershell
+   py -m pip install -e .          # or: uv tool install -e .
+   ```
+
+   Validate: `ida-bridge server status` says the server is not running.
+
+2. **Headless venv** — one Python where both `idapro` and `ida_bridge` are importable
+   (the `ida_bridge` runner launches *Python*, not an IDA binary):
+
+   ```powershell
+   python -m venv "$env:USERPROFILE\.idapro\venv"
+   & "$env:USERPROFILE\.idapro\venv\Scripts\python.exe" -m pip install idapro pydantic websocket-client apsw
+   & "$env:USERPROFILE\.idapro\venv\Scripts\python.exe" -m pip install -e .
+   ```
+
+   Then activate idalib for that Python once (writes
+   `%APPDATA%\Hex-Rays\IDA Pro\ida-config.json`):
+
+   ```powershell
+   python "C:\Program Files\IDA Professional 9.3\idalib\python\py-activate-idalib.py"
+   ```
+
+   The bundled `idapro` wheel lives in the same `idalib\python\` directory if you
+   prefer installing from it directly. `py-activate-idalib.py` is written for the
+   IDA version it ships with; the last run wins in `ida-config.json`.
+   `idapro` also respects the `IDADIR` environment variable pointing at an install dir.
+
+   Validate: `ida-bridge supervisor start-idalib --idb <path>.i64` prints a `client_id`
+   (with the bridge server running: `ida-bridge server start`).
+
+3. **UI plugin**:
+
+   - Install the same deps (`pydantic`, `websocket-client`) plus `ida_bridge` itself
+     into the Python IDA uses (`idapyswitch`, bundled with IDA, picks that Python).
+   - Copy `src\ida_bridge\ida_bridge_plugin.py` to `%APPDATA%\Hex-Rays\IDA Pro\plugins\`
+     (Windows cannot reliably symlink without developer mode; a copy is fine).
+
+   Validate: `import ida_bridge` in IDA's Python console, then restart IDA and look
+   for a `[ida-bridge]` line in the Output window.
+
+4. **start-ui** — `supervisor start-ui` auto-detects the newest IDA install
+   (`find_ida_windows()`) or takes an explicit `--ida
+   "C:\Program Files\IDA Professional 9.3\ida.exe"`.
+
+Notes:
+
+- A Python process launched from the headless venv appears as two processes in
+  Windows process tools. This is normal: `Scripts\python.exe` is CPython's venv
+  redirector and the base-interpreter child runs the bridge/idalib code.
+- Logs default to `%LOCALAPPDATA%\ida-bridge\logs` on Windows
+  (`~/Library/Logs/ida-bridge` on macOS); `IDA_BRIDGE_LOG_DIR` overrides on both.
+- `supervisor stop` on Windows: graceful quit goes through the bridge `quit` RPC;
+  the OS-level kill escalation uses `TerminateProcess` (no SIGTERM on Windows).
 
 ## How it works
 
@@ -128,6 +199,11 @@ Most of the work happens iteratively via `exec` against running IDA instance -- 
 
 `exec-idb` is available for one-off queries, quick probes, or create-and-save flows.
 It is fire-and-forget: start IDA, run code or SQL, exit (`--save` if needed).
+
+By default headless launches wait for IDA's auto-analysis queue before connecting.
+For a poisoned or intentionally non-terminating queue, pass `--skip-auto-wait`
+to `start-idalib` or `exec-idb`; queries then see the analysis already stored in
+the IDB, which may be incomplete.
 
 ## Runtime and sessions
 
@@ -185,10 +261,10 @@ Headless only (idalib). UI IDA handles dyld module selection through its own GUI
 | `IDA_BRIDGE_HOST` | `127.0.0.1` | bridge server bind host and client default host |
 | `IDA_BRIDGE_PORT` | `8765` | bridge server bind port and client default port |
 | `IDA_BRIDGE_WS_MAX_SIZE` | `67108864` | max incoming websocket message size in bytes |
-| `IDA_BRIDGE_LOG_FILE` | `~/Library/Logs/ida-bridge/server.log` | structured server log (rotated); raw stdout/stderr go to the sibling `server.out` |
+| `IDA_BRIDGE_LOG_FILE` | `~/Library/Logs/ida-bridge/server.log` (macOS) / `%LOCALAPPDATA%\ida-bridge\logs\server.log` (Windows) | structured server log (rotated); raw stdout/stderr go to the sibling `server.out` |
 | `IDA_BRIDGE_LOG_MAX_BYTES` | `10485760` | log rotation threshold in bytes |
 | `IDA_BRIDGE_LOG_BACKUP_COUNT` | `3` | number of rotated log files to keep |
-| `IDA_BRIDGE_LOG_DIR` | `~/Library/Logs/ida-bridge` | base directory for all bridge logs (server log + per-instance launch logs `idaui-<pid>.log` / `idalib-<pid>.log`) |
+| `IDA_BRIDGE_LOG_DIR` | `~/Library/Logs/ida-bridge` (macOS) / `%LOCALAPPDATA%\ida-bridge\logs` (Windows) | base directory for all bridge logs (server log + per-instance launch logs `idaui-<pid>.log` / `idalib-<pid>.log`) |
 | `IDA_BRIDGE_LOG_KEEP` | `30` | dead per-instance logs retained per kind (live instances always kept) |
 | `IDA_BRIDGE_LOG_PRUNE_INTERVAL_S` | `3600` | how often the server sweeps dead per-instance logs |
 | `IDA_BRIDGE_STATEFUL_TTL_S` | `3600` | seconds before idle stateful ownership expires |

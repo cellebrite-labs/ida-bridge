@@ -16,6 +16,8 @@ from ida_bridge import logs, proc, protocol
 
 from . import bridge, ida_resolve
 
+_IS_WIN = os.name == "nt"
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -96,8 +98,8 @@ def _clean_env() -> dict[str, str]:
 
 
 def cmd_start_ui(args: argparse.Namespace) -> int:
-    if sys.platform != "darwin":
-        print("start-ui currently supports macOS only (uses LaunchServices via `open`).", file=sys.stderr)
+    if sys.platform != "darwin" and not _IS_WIN:
+        print("start-ui currently supports macOS and Windows only.", file=sys.stderr)
         return 2
 
     # Validate and resolve paths.
@@ -122,14 +124,16 @@ def cmd_start_ui(args: argparse.Namespace) -> int:
 
     tmp_log = _starting_log_path("idaui")
 
-    # Resolve app bundle path.
+    # Resolve the IDA app bundle (macOS) or executable (Windows).
     if args.ida:
         app = Path(args.ida).expanduser().resolve()
-        if not app.exists() or app.suffix != ".app":
+        if _IS_WIN:
+            if not app.is_file():
+                raise SystemExit(f"--ida must point to the IDA executable (ida.exe/ida64.exe): {app}")
+        elif not app.exists() or app.suffix != ".app":
             raise SystemExit(f"--ida must point to a .app bundle: {app}")
     else:
-        app = ida_resolve.find_ida_app_bundle_macos()
-
+        app = ida_resolve.find_ida()
     existing = _snapshot_or_fail("start-ui")
     if isinstance(existing, int):
         return existing
@@ -144,19 +148,31 @@ def cmd_start_ui(args: argparse.Namespace) -> int:
         assert idb_path is not None
         args_list.append(idb_path)
 
-    # Launch via LaunchServices (Finder-like; inherits launchd env, e.g. your plist-set vars).
-    cmd = ["open", "-n", "-a", str(app), "--args", *args_list]
-    print("running:", " ".join(cmd), file=sys.stderr, flush=True)
-    res = subprocess.run(cmd, env=_clean_env(), check=False)
-    if res.returncode != 0:
-        return int(res.returncode)
+    # Launch.
+    if _IS_WIN:
+        # Launch the GUI exe directly. CREATE_NEW_PROCESS_GROUP detaches the app
+        # from the current console (so it never dies with it) without popping a
+        # new console window. Unlike macOS's `open`, Popen gives us the child PID.
+        child = subprocess.Popen([str(app), *args_list], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        print("running:", " ".join([str(app), *args_list]), file=sys.stderr, flush=True)
+    else:
+        # Launch via LaunchServices (Finder-like; inherits launchd env, e.g. your plist-set vars).
+        cmd = ["open", "-n", "-a", str(app), "--args", *args_list]
+        print("running:", " ".join(cmd), file=sys.stderr, flush=True)
+        res = subprocess.run(cmd, env=_clean_env(), check=False)
+        if res.returncode != 0:
+            return int(res.returncode)
 
-    # Match: any new IDA client whose idb_path filename overlaps with what we asked for.
-    # NOTE: This is a best-effort heuristic because `open -n -a` doesn't return the child PID.
-    want = (idb_path or input_path or "").split("/")[-1]
+    # Match: on Windows we know the child PID up front (`meta.pid == child.pid`);
+    # on macOS `open -n -a` doesn't return a PID, so fall back to a best-effort
+    # heuristic: any new IDA client whose idb_path filename overlaps with what
+    # we asked for.
+    want: str | None = None if _IS_WIN else (idb_path or input_path or "").split("/")[-1]
 
     def _match_ui(c: protocol.ClientInfo) -> bool:
         meta = c.meta or {}
+        if _IS_WIN:
+            return meta.get("pid") == child.pid
         got = (meta.get("idb_path") or "").split("/")[-1]
         if want and got and want not in got and got not in want:
             return False
@@ -165,8 +181,9 @@ def cmd_start_ui(args: argparse.Namespace) -> int:
     matched = asyncio.run(bridge.poll_for_new_client(existing, _match_ui, timeout_s=float(args.wait_s), interval_s=0.5))
 
     if matched is None:
+        prefix = "launched IDA via open, but" if not _IS_WIN else "launched IDA, but"
         print(
-            "launched IDA via open, but could not observe a new client via the bridge.\n"
+            f"{prefix} could not observe a new client via the bridge.\n"
             "- verify the plugin is installed and deps are present\n"
             f"log: {tmp_log}",
             file=sys.stderr,
@@ -207,7 +224,14 @@ def _idalib_runner_path() -> Path:
     return Path(__file__).resolve().parent.parent / "idalib_runner.py"
 
 
-IDALIB_VENV_PYTHON = Path(os.path.expanduser("~/.idapro/venv/bin/python3"))
+def _idalib_venv_python() -> Path:
+    """Default idalib venv python, mirroring the macOS layout under Windows."""
+    if os.name == "nt":
+        return Path.home() / ".idapro" / "venv" / "Scripts" / "python.exe"
+    return Path.home() / ".idapro" / "venv" / "bin" / "python3"
+
+
+IDALIB_VENV_PYTHON = _idalib_venv_python()
 
 
 def _resolve_python(python: str | None) -> str:
@@ -218,7 +242,7 @@ def _resolve_python(python: str | None) -> str:
         raise StartError(
             f"idalib venv python not found: {IDALIB_VENV_PYTHON}\n\n"
             "Either:\n"
-            "  - Run: ida-setup init-idalib\n"
+            f"  - Set up the headless venv (see README 'Windows setup' / 'Manual setup')\n"
             "  - Or pass --python /path/to/python explicitly"
         )
     resolved = str(Path(python).expanduser())
@@ -228,6 +252,11 @@ def _resolve_python(python: str | None) -> str:
     if which:
         return which
     raise StartError(f"python not found or not executable: {python}")
+
+
+def _same_path(left: str, right: str) -> bool:
+    """Compare absolute paths using the current platform's case semantics."""
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
 
 
 def start_idalib(
@@ -240,6 +269,7 @@ def start_idalib(
     dyld_module: str | None = None,
     python: str | None = None,
     wait_s: float = 300.0,
+    skip_auto_wait: bool = False,
 ) -> IdalibStartResult:
     """Start an idalib worker and poll until it connects to the bridge.
 
@@ -305,17 +335,37 @@ def start_idalib(
             runner_args.extend(["--arch", arch])
         if dyld_module:
             runner_args.extend(["--dyld-module", dyld_module])
+    if skip_auto_wait:
+        runner_args.append("--skip-auto-wait")
 
     # Start with a placeholder log, then bind it to the pid once the process exists.
     tmp_log = _starting_log_path("idalib")
     log_fh = open(tmp_log, "w")
-    child = subprocess.Popen(runner_args, stdout=log_fh, stderr=subprocess.STDOUT, start_new_session=True)
+    if _IS_WIN:
+        # CREATE_NO_WINDOW keeps the headless runner from popping a console; stdout
+        # is redirected to the log file anyway. (start_new_session is invalid on Windows.)
+        popen_kwargs: dict = {"creationflags": subprocess.CREATE_NO_WINDOW}
+    else:
+        popen_kwargs = {"start_new_session": True}
+    child = subprocess.Popen(runner_args, stdout=log_fh, stderr=subprocess.STDOUT, **popen_kwargs)
 
     log_path = _bind_log_to_pid(tmp_log, "idalib", child.pid)
 
+    expected_idb_path = idb_path or resolved_out_idb
+    assert expected_idb_path is not None
+
     def _match_idalib(c: protocol.ClientInfo) -> bool:
         meta = c.meta or {}
-        return meta.get("runtime") == "idalib" and meta.get("pid") == child.pid
+        if meta.get("runtime") != "idalib":
+            return False
+        if not _IS_WIN:
+            return meta.get("pid") == child.pid
+
+        # CPython's Windows venv redirector remains as the Popen child while a
+        # base-interpreter grandchild runs the code and reports its own PID.
+        # Match the newly connected runner by its unique target IDB instead.
+        got_idb_path = meta.get("idb_path")
+        return isinstance(got_idb_path, str) and _same_path(got_idb_path, expected_idb_path)
 
     matched = asyncio.run(
         bridge.poll_for_new_client(existing, _match_idalib, timeout_s=wait_s, abort=lambda: child.poll() is not None)
@@ -323,12 +373,28 @@ def start_idalib(
     log_fh.close()
 
     if matched is None:
+        if _IS_WIN:
+            log_path = _bind_log_to_pid(Path(log_path), "idalib", child.pid)
         if proc.is_pid_alive(child.pid):
             return IdalibStartResult(pid=child.pid, client_id=None, log_path=log_path)
         raise StartError(f"idalib runner exited early with code {child.returncode}\nlog: {log_path}")
 
-    idb_path = (matched.meta or {}).get("idb_path")
-    return IdalibStartResult(pid=child.pid, client_id=matched.client_id, log_path=log_path, idb_path=idb_path)
+    matched_meta = matched.meta or {}
+    connected_pid = matched_meta.get("pid")
+    if not isinstance(connected_pid, int):
+        connected_pid = child.pid
+    if _IS_WIN and connected_pid != child.pid:
+        # The first rename normally fails while the runner owns the file on
+        # Windows. It is closed now, so bind the log to the real worker PID.
+        log_path = _bind_log_to_pid(Path(log_path), "idalib", connected_pid)
+
+    connected_idb_path = matched_meta.get("idb_path")
+    return IdalibStartResult(
+        pid=connected_pid,
+        client_id=matched.client_id,
+        log_path=log_path,
+        idb_path=connected_idb_path,
+    )
 
 
 def cmd_start_idalib(args: argparse.Namespace) -> int:
@@ -342,6 +408,7 @@ def cmd_start_idalib(args: argparse.Namespace) -> int:
             dyld_module=args.dyld_module,
             python=args.python,
             wait_s=float(args.wait_s),
+            skip_auto_wait=args.skip_auto_wait,
         )
     except StartError as exc:
         print(str(exc), file=sys.stderr)

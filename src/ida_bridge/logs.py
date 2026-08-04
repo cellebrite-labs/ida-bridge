@@ -25,8 +25,15 @@ def log_dir() -> Path:
 
     Overridable via ``IDA_BRIDGE_LOG_DIR``. The server log can be relocated
     independently via ``IDA_BRIDGE_LOG_FILE``.
+
+    Default is platform-aware: ``~/Library/Logs/ida-bridge`` on macOS/Unix,
+    ``%LOCALAPPDATA%\\ida-bridge\\logs`` on Windows.
     """
-    default = Path.home() / "Library" / "Logs" / "ida-bridge"
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        default = Path(base) / "ida-bridge" / "logs"
+    else:
+        default = Path.home() / "Library" / "Logs" / "ida-bridge"
     return Path(os.getenv("IDA_BRIDGE_LOG_DIR", str(default))).expanduser()
 
 
