@@ -205,6 +205,8 @@ Success response:
 
 On failure, `exec_response` follows the common `ok: false` response rules and may include `traceback`.
 
+Successful execution retains at most 1 MiB for each of `stdout` and `stderr`. A stream that exceeds the limit ends with `[ida-bridge output truncated]`. Truncation is reported in-band and does not change the response schema. Mirrored output sent to the IDA instance log has the same per-stream limit.
+
 ### `reset`
 
 Resets the target exec environment.
@@ -385,6 +387,7 @@ The bridge enforces request timeouts for agent -> ida routed requests.
 - requests may override it with `timeout_s`
 - on timeout, the bridge replies with `ok = false` and `code = "TIMEOUT"`
 - if IDA later responds for that `id`, the bridge drops the response
+- the timeout response does not interrupt code already running inside IDA; bounded stdout/stderr prevents continued output from growing capture memory or the instance log without limit
 
 ## Security
 

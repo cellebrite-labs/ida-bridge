@@ -42,7 +42,12 @@ async def start_bridge(*, timeout_s: int = 60) -> AsyncIterator[BridgeInfo]:
     server = BridgeServer(default_timeout_s=timeout_s, timeout_tick_s=1.0)
     server.start_background_tasks()
     try:
-        async with websockets.serve(server.handler, "127.0.0.1", 0) as ws_server:
+        async with websockets.serve(
+            server.handler,
+            "127.0.0.1",
+            0,
+            max_size=protocol.ws_max_size(),
+        ) as ws_server:
             port = ws_server.sockets[0].getsockname()[1]
             url = f"ws://127.0.0.1:{port}"
             yield BridgeInfo(server=server, url=url, host="127.0.0.1", port=port)

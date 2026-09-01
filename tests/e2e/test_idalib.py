@@ -7,14 +7,30 @@ Destructive tests (e.g. shutdown) use the function-scoped ``idalib_instance``
 fixture so they get a fresh process they can kill.
 """
 
+import asyncio
+import os
+
 import pytest
 
 from ida_bridge import protocol
+from ida_bridge.ida_runtime import EXEC_OUTPUT_LIMIT_BYTES, OUTPUT_TRUNCATION_MARKER
 from tests.e2e.conftest import IdalibInstance
 
 pytestmark = [pytest.mark.asyncio(loop_scope="module")]
 
 SESSION_ID = "e2e-idalib"
+
+
+def _read_process_output_until_marker(instance: IdalibInstance) -> bytes:
+    assert instance.process.stdout is not None
+    marker = OUTPUT_TRUNCATION_MARKER.encode("utf-8")
+    output = bytearray()
+    while marker not in output:
+        chunk = os.read(instance.process.stdout.fileno(), 4096)
+        if not chunk:
+            break
+        output.extend(chunk)
+    return bytes(output)
 
 
 # ---- non-destructive tests (shared instance) --------------------------------
@@ -111,6 +127,32 @@ class TestExecStdout:
             )
             assert resp.ok
             assert resp.stdout and "bridge_test_output" in resp.stdout
+
+    async def test_large_stdout_bounds_capture_and_mirror(self, shared_idalib: IdalibInstance) -> None:
+        prefix = "ida_bridge_output_limit_start:"
+        drain_task = asyncio.create_task(
+            asyncio.to_thread(_read_process_output_until_marker, shared_idalib)
+        )
+        async with shared_idalib.agent_client() as agent:
+            resp = await agent.exec(
+                shared_idalib.client_id,
+                f"print({prefix!r} + 'x' * {EXEC_OUTPUT_LIMIT_BYTES * 2}, end='')",
+                session_id=SESSION_ID,
+                persist=True,
+            )
+
+        mirrored = await asyncio.wait_for(drain_task, timeout=30)
+        marker = OUTPUT_TRUNCATION_MARKER.encode("utf-8")
+        mirrored_start = mirrored.index(prefix.encode("utf-8"))
+        mirrored_end = mirrored.index(marker, mirrored_start) + len(marker)
+        mirrored_request = mirrored[mirrored_start:mirrored_end]
+
+        assert resp.ok
+        assert resp.stdout is not None
+        assert resp.stdout.endswith(OUTPUT_TRUNCATION_MARKER)
+        assert len(resp.stdout.encode("utf-8")) <= EXEC_OUTPUT_LIMIT_BYTES
+        assert mirrored_request.endswith(marker)
+        assert len(mirrored_request) <= EXEC_OUTPUT_LIMIT_BYTES
 
 
 class TestExecError:
