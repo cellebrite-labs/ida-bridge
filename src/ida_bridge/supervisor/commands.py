@@ -435,6 +435,8 @@ def matches_spawned_idalib(client: protocol.ClientInfo, spawned: SpawnedIdalib) 
     if meta.get("runtime") != "idalib":
         return False
     got_pid = meta.get("pid")
+    if isinstance(got_pid, bool):
+        got_pid = None
     if got_pid == spawned.pid:
         return True
     # Windows venv python.exe is a redirector: Popen.pid is the stub,

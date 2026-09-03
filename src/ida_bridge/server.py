@@ -102,6 +102,13 @@ class _StopTarget:
     managed: _ManagedIdalib | None = None
 
 
+def _metadata_pid(meta: dict[str, Any]) -> int | None:
+    value = meta.get("pid")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class _Owned:
     session_id: str
@@ -719,8 +726,8 @@ class BridgeServer:
             if not await asyncio.to_thread(matches_spawned_idalib, info, managed.spawned):
                 continue
             managed.client_id = client_id
-            runtime_pid = client.meta.get("pid")
-            if isinstance(runtime_pid, int):
+            runtime_pid = _metadata_pid(client.meta)
+            if runtime_pid is not None:
                 managed.runtime_pid = runtime_pid
                 bind_spawned_idalib_log(managed.spawned, runtime_pid)
             return managed
@@ -743,8 +750,8 @@ class BridgeServer:
             info = protocol.ClientInfo(client_id=client_id, role=protocol.ROLE_IDA, meta=client.meta)
             if await asyncio.to_thread(matches_spawned_idalib, info, managed.spawned):
                 managed.client_id = client_id
-                runtime_pid = client.meta.get("pid")
-                if isinstance(runtime_pid, int):
+                runtime_pid = _metadata_pid(client.meta)
+                if runtime_pid is not None:
                     managed.runtime_pid = runtime_pid
                     bind_spawned_idalib_log(managed.spawned, runtime_pid)
                 return info
@@ -853,14 +860,14 @@ class BridgeServer:
                     "target must be a headless idalib client",
                     {"target": target, "role": client.role, "runtime": client.meta.get("runtime")},
                 )
-            pid = client.meta.get("pid")
-            if not isinstance(pid, int) or pid <= 0:
+            pid = _metadata_pid(client.meta)
+            if pid is None:
                 return _ForwardReject(protocol.ERR_STOP_FAILED, "idalib client has no valid pid", {"target": target})
             return _StopTarget(client_id=target, pid=pid, managed=managed)
 
         pid = int(target)
         for client_id, client in self._clients.items():
-            if client.role != protocol.ROLE_IDA or client.meta.get("pid") != pid:
+            if client.role != protocol.ROLE_IDA or _metadata_pid(client.meta) != pid:
                 continue
             if client.meta.get("runtime") != "idalib":
                 return _ForwardReject(

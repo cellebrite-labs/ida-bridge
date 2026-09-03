@@ -185,6 +185,31 @@ class TestRemoteStopIdalib:
             finally:
                 await agent.close()
 
+    async def test_boolean_pid_metadata_cannot_authorize_pid_one(self, serve_bridge: ServeBridge) -> None:
+        async with serve_bridge(bridge_client_id="bridge-1", lifecycle_quit_timeout_s=0.02) as (_, url):
+            agent = await connect_client(url, role=protocol.ROLE_AGENT, client_id="agent-1")
+            ida = await connect_client(
+                url,
+                role=protocol.ROLE_IDA,
+                client_id="idalib-bad-pid",
+                meta={"runtime": "idalib", "pid": True, "idb_path": "/srv/idbs/sample.i64"},
+            )
+            try:
+                with patch("ida_bridge.server.proc.terminate_pid", return_value="sigkill") as terminate:
+                    await send_msg(
+                        agent,
+                        protocol.StopIdalibRequest(
+                            id=protocol.new_req_id(), src="agent-1", dst="bridge-1", target="1"
+                        ),
+                    )
+                    resp = await recv_typed(agent, protocol.StopIdalibResponse)
+                assert resp.ok is False
+                assert resp.code == protocol.ERR_TARGET_NOT_FOUND
+                terminate.assert_not_called()
+            finally:
+                await ida.close()
+                await agent.close()
+
     async def test_quit_timeout_escalates_on_bridge_host(self, serve_bridge: ServeBridge) -> None:
         async with serve_bridge(
             bridge_client_id="bridge-1",
