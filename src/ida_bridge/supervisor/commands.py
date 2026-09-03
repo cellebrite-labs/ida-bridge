@@ -246,6 +246,25 @@ class IdalibStartResult:
     idb_path: str | None = None
 
 
+@dataclass
+class SpawnedIdalib:
+    """A bridge-host idalib child and the paths resolved for its launch."""
+
+    process: Any
+    expected_idb_path: str
+    log_path: str
+
+    @property
+    def pid(self) -> int:
+        return int(self.process.pid)
+
+
+@dataclass(frozen=True)
+class _IdalibLaunch:
+    argv: list[str]
+    expected_idb_path: str
+
+
 def _idalib_runner_path() -> Path:
     # idalib_runner.py lives alongside the supervisor package's parent.
     return Path(__file__).resolve().parent.parent / "idalib_runner.py"
@@ -282,39 +301,30 @@ def _resolve_python(python: str | None) -> str:
     raise StartError(f"python not found or not executable: {python}")
 
 
-def start_idalib(
+def _prepare_idalib_launch(
     *,
-    idb: str | None = None,
-    input_file: str | None = None,
-    out_idb: str | None = None,
-    force: bool = False,
-    arch: str | None = None,
-    dyld_module: str | None = None,
-    python: str | None = None,
-    wait_s: float = 300.0,
+    idb: str | None,
+    input_file: str | None,
+    out_idb: str | None,
+    force: bool,
+    arch: str | None,
+    dyld_module: str | None,
+    python: str | None,
     skip_initial_auto_analysis: bool = False,
-) -> IdalibStartResult:
-    """Start an idalib worker and poll until it connects to the bridge.
-
-    Returns an IdalibStartResult. If ``client_id`` is None, the process
-    started but did not connect within ``wait_s`` (may still be analyzing).
-
-    Raises StartError on validation/startup failures.
-    """
+) -> _IdalibLaunch:
     python_path = _resolve_python(python)
 
     runner = _idalib_runner_path()
     if not runner.exists():
         raise StartError(f"idalib runner not found: {runner}")
 
-    # Validate and resolve paths.
     idb_path: str | None = None
     input_path: str | None = None
     resolved_out_idb: str | None = None
 
     if idb:
-        if dyld_module is not None:
-            raise StartError("--dyld-module is only valid with --input")
+        if out_idb is not None or force or arch is not None or dyld_module is not None:
+            raise StartError("--out-idb, --force, --arch, and --dyld-module are only valid with --input")
         idb_path = str(Path(idb).expanduser().resolve())
         if not os.path.exists(idb_path):
             raise StartError(f"IDB not found: {idb_path}")
@@ -343,86 +353,166 @@ def start_idalib(
     else:
         raise StartError("one of --idb or --input is required")
 
-    existing = asyncio.run(bridge.snapshot_existing())
-
-    # Build runner args.
-    runner_args: list[str] = [python_path, str(runner)]
+    argv: list[str] = [python_path, str(runner)]
     if idb_path is not None:
-        runner_args.extend(["--idb", idb_path])
+        argv.extend(["--idb", idb_path])
+        expected_idb_path = idb_path
     else:
         assert input_path is not None and resolved_out_idb is not None
-        runner_args.extend(["--input", input_path, "--out-idb", resolved_out_idb])
+        argv.extend(["--input", input_path, "--out-idb", resolved_out_idb])
         if force:
-            runner_args.append("--force")
+            argv.append("--force")
         if arch:
-            runner_args.extend(["--arch", arch])
+            argv.extend(["--arch", arch])
         if dyld_module:
-            runner_args.extend(["--dyld-module", dyld_module])
+            argv.extend(["--dyld-module", dyld_module])
+        expected_idb_path = resolved_out_idb
     if skip_initial_auto_analysis:
-        runner_args.append("--skip-initial-auto-analysis")
+        argv.append("--skip-initial-auto-analysis")
 
-    # Start with a placeholder log, then bind it to the pid once the process exists.
+    return _IdalibLaunch(argv=argv, expected_idb_path=expected_idb_path)
+
+
+def _spawn_prepared_idalib(
+    launch: _IdalibLaunch,
+    *,
+    bridge_host: str | None = None,
+    bridge_port: int | None = None,
+) -> SpawnedIdalib:
+    if (bridge_host is None) != (bridge_port is None):
+        raise ValueError("bridge_host and bridge_port must be provided together")
+
+    env = None
+    if bridge_host is not None and bridge_port is not None:
+        env = dict(os.environ)
+        env["IDA_BRIDGE_HOST"] = bridge_host
+        env["IDA_BRIDGE_PORT"] = str(bridge_port)
+
     tmp_log = _starting_log_path("idalib")
-    expected_idb_path = idb_path or resolved_out_idb
-    assert expected_idb_path is not None
+    with open(tmp_log, "w") as log_fh:
+        child = subprocess.Popen(
+            launch.argv,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            env=env,
+            **proc.detached_popen_kwargs(),
+        )
 
-    log_fh = open(tmp_log, "w")
-    child: subprocess.Popen | None = None
-    log_path = str(tmp_log)
+    log_path = _bind_log_to_pid(tmp_log, "idalib", child.pid)
+    return SpawnedIdalib(process=child, expected_idb_path=launch.expected_idb_path, log_path=log_path)
+
+
+def spawn_idalib(
+    *,
+    idb: str | None = None,
+    input_file: str | None = None,
+    out_idb: str | None = None,
+    force: bool = False,
+    arch: str | None = None,
+    dyld_module: str | None = None,
+    python: str | None = None,
+    bridge_host: str | None = None,
+    bridge_port: int | None = None,
+) -> SpawnedIdalib:
+    """Validate and start an idalib worker on the current host without polling a bridge."""
+    if (bridge_host is None) != (bridge_port is None):
+        raise ValueError("bridge_host and bridge_port must be provided together")
+    launch = _prepare_idalib_launch(
+        idb=idb,
+        input_file=input_file,
+        out_idb=out_idb,
+        force=force,
+        arch=arch,
+        dyld_module=dyld_module,
+        python=python,
+    )
+    return _spawn_prepared_idalib(launch, bridge_host=bridge_host, bridge_port=bridge_port)
+
+
+def matches_spawned_idalib(client: protocol.ClientInfo, spawned: SpawnedIdalib) -> bool:
+    """Return whether a connected client is the runner represented by ``spawned``."""
+    meta = client.meta or {}
+    if meta.get("runtime") != "idalib":
+        return False
+    got_pid = meta.get("pid")
+    if got_pid == spawned.pid:
+        return True
+    # Windows venv python.exe is a redirector: Popen.pid is the stub,
+    # os.getpid() inside the runner is the real interpreter.
+    if sys.platform != "win32":
+        return False
+    if isinstance(got_pid, int) and proc.is_pid_in_tree(spawned.pid, got_pid):
+        return True
+    got_path = meta.get("idb_path")
+    return isinstance(got_path, str) and _same_path(got_path, spawned.expected_idb_path)
+
+
+def start_idalib(
+    *,
+    idb: str | None = None,
+    input_file: str | None = None,
+    out_idb: str | None = None,
+    force: bool = False,
+    arch: str | None = None,
+    dyld_module: str | None = None,
+    python: str | None = None,
+    wait_s: float = 300.0,
+    skip_initial_auto_analysis: bool = False,
+) -> IdalibStartResult:
+    """Start an idalib worker and poll until it connects to the bridge.
+
+    Returns an IdalibStartResult. If ``client_id`` is None, the process
+    started but did not connect within ``wait_s`` (may still be analyzing).
+
+    Raises StartError on validation/startup failures.
+    """
+    launch = _prepare_idalib_launch(
+        idb=idb,
+        input_file=input_file,
+        out_idb=out_idb,
+        force=force,
+        arch=arch,
+        dyld_module=dyld_module,
+        python=python,
+        skip_initial_auto_analysis=skip_initial_auto_analysis,
+    )
+
+    existing = asyncio.run(bridge.snapshot_existing())
+    spawned: SpawnedIdalib | None = None
     try:
-        try:
-            child = subprocess.Popen(
-                runner_args,
-                stdout=log_fh,
-                stderr=subprocess.STDOUT,
-                **proc.detached_popen_kwargs(),
+        spawned = _spawn_prepared_idalib(launch)
+        matched = asyncio.run(
+            bridge.poll_for_new_client(
+                existing,
+                lambda client: matches_spawned_idalib(client, spawned),
+                timeout_s=wait_s,
+                abort=lambda: spawned.process.poll() is not None,
             )
-            # POSIX can rename an open file; Windows may keep the placeholder
-            # until this handle is closed (retried below).
-            log_path = _bind_log_to_pid(tmp_log, "idalib", child.pid)
+        )
+    except BaseException:
+        # Unexpected failure after spawn must not leak the runner (or its
+        # Windows venv child). Intentional "still waiting" returns below.
+        if spawned is not None:
+            proc.terminate_pid(spawned.pid, timeout_s=2.0)
+        raise
 
-            def _match_idalib(c: protocol.ClientInfo) -> bool:
-                meta = c.meta or {}
-                if meta.get("runtime") != "idalib":
-                    return False
-                got_pid = meta.get("pid")
-                if got_pid == child.pid:
-                    return True
-                # Windows venv python.exe is a redirector: Popen.pid is the stub,
-                # os.getpid() inside the runner is the real interpreter.
-                if sys.platform != "win32":
-                    return False
-                if isinstance(got_pid, int) and proc.is_pid_in_tree(child.pid, got_pid):
-                    return True
-                got = meta.get("idb_path")
-                return isinstance(got, str) and _same_path(got, expected_idb_path)
-
-            matched = asyncio.run(
-                bridge.poll_for_new_client(
-                    existing, _match_idalib, timeout_s=wait_s, abort=lambda: child.poll() is not None
-                )
-            )
-        except BaseException:
-            # Unexpected failure after spawn must not leak the runner (or its
-            # Windows venv child). Intentional "still waiting" returns below.
-            if child is not None:
-                proc.terminate_pid(child.pid, timeout_s=2.0)
-            raise
-    finally:
-        log_fh.close()
-
-    assert child is not None
-    result_pid = child.pid
+    result_pid = spawned.pid
     if matched is not None:
         connected_pid = (matched.meta or {}).get("pid")
         if isinstance(connected_pid, int):
             result_pid = connected_pid
-    log_path = _bind_log_to_pid(Path(log_path), "idalib", result_pid)
+    log_path = _bind_log_to_pid(Path(spawned.log_path), "idalib", result_pid)
 
     if matched is None:
-        if proc.is_pid_alive(child.pid):
-            return IdalibStartResult(pid=child.pid, client_id=None, log_path=log_path)
-        raise StartError(f"idalib runner exited early with code {child.returncode}\nlog: {log_path}")
+        return_code = spawned.process.poll()
+        if return_code is None and proc.is_pid_alive(spawned.pid):
+            return IdalibStartResult(
+                pid=spawned.pid,
+                client_id=None,
+                log_path=log_path,
+                idb_path=spawned.expected_idb_path,
+            )
+        raise StartError(f"idalib runner exited early with code {return_code}\nlog: {log_path}")
 
     return IdalibStartResult(
         pid=result_pid,
