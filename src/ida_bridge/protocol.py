@@ -27,7 +27,7 @@ from pydantic_core import PydanticCustomError
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_URL = f"ws://{DEFAULT_HOST}:{DEFAULT_PORT}"
-PROTO_VERSION = 4
+PROTO_VERSION = 5
 
 # WebSocket close codes
 WS_CLOSE_PROTOCOL_ERROR = 1002
@@ -55,6 +55,10 @@ MSG_RESET = "reset"
 MSG_RESET_RESPONSE = "reset_response"
 MSG_QUIT = "quit"
 MSG_QUIT_RESPONSE = "quit_response"
+MSG_START_IDALIB = "start_idalib"
+MSG_START_IDALIB_RESPONSE = "start_idalib_response"
+MSG_STOP_IDALIB = "stop_idalib"
+MSG_STOP_IDALIB_RESPONSE = "stop_idalib_response"
 
 MessageType = Literal[
     MSG_ERROR,
@@ -68,6 +72,10 @@ MessageType = Literal[
     MSG_RESET_RESPONSE,
     MSG_QUIT,
     MSG_QUIT_RESPONSE,
+    MSG_START_IDALIB,
+    MSG_START_IDALIB_RESPONSE,
+    MSG_STOP_IDALIB,
+    MSG_STOP_IDALIB_RESPONSE,
 ]
 
 # List filters
@@ -107,6 +115,8 @@ ERR_SESSION_CONFLICT = "SESSION_CONFLICT"
 ERR_TAKEOVER_PENDING = "TAKEOVER_PENDING"
 ERR_RELEASE_PENDING = "RELEASE_PENDING"
 ERR_SESSION_LOCKED = "SESSION_LOCKED"
+ERR_START_FAILED = "START_FAILED"
+ERR_STOP_FAILED = "STOP_FAILED"
 
 
 class BaseMessage(BaseModel):
@@ -402,6 +412,84 @@ class QuitResponse(ResponseBase):
     type: Literal[MSG_QUIT_RESPONSE] = MSG_QUIT_RESPONSE
 
 
+# -----------------
+# remote idalib lifecycle
+# -----------------
+
+
+class StartIdalibRequest(RequestBase):
+    type: Literal[MSG_START_IDALIB] = MSG_START_IDALIB
+
+    idb: NonBlankStr | None = None
+    input: NonBlankStr | None = None
+    out_idb: NonBlankStr | None = None
+    force: bool = False
+    arch: NonBlankStr | None = None
+    dyld_module: NonBlankStr | None = None
+    python: NonBlankStr | None = None
+    wait_s: float = Field(default=300.0, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_start_fields(self):
+        if (self.idb is None) == (self.input is None):
+            raise ValueError("start_idalib: exactly one of --idb or --input is required")
+
+        if self.idb is not None:
+            if self.out_idb is not None or self.force or self.arch is not None or self.dyld_module is not None:
+                raise ValueError("start_idalib: input options are only valid with --input")
+            return self
+
+        if self.out_idb is None:
+            raise ValueError("start_idalib: --out-idb is required with --input")
+        if self.arch is not None and self.dyld_module is not None:
+            raise ValueError("start_idalib: --arch and --dyld-module are mutually exclusive")
+        return self
+
+
+class StartIdalibResponse(ResponseBase):
+    type: Literal[MSG_START_IDALIB_RESPONSE] = MSG_START_IDALIB_RESPONSE
+
+    status: Literal["connected", "waiting"] | None = None
+    client_id: ClientId | None = None
+    pid: int | None = Field(default=None, gt=0)
+    idb_path: NonBlankStr | None = None
+    log: NonBlankStr | None = None
+
+    @model_validator(mode="after")
+    def _validate_start_result(self):
+        for field in ("status", "pid", "idb_path", "log"):
+            self._enforce_ok(field, require_when_ok=True)
+
+        if not self.ok:
+            self._enforce_err_only("client_id", require=False)
+        elif self.status == "connected":
+            self._enforce_ok_only("client_id", require=True)
+        else:
+            self._enforce_ok_only("client_id", require=False)
+        return self
+
+
+class StopIdalibRequest(RequestBase):
+    type: Literal[MSG_STOP_IDALIB] = MSG_STOP_IDALIB
+
+    target: NonBlankStr
+
+
+class StopIdalibResponse(ResponseBase):
+    type: Literal[MSG_STOP_IDALIB_RESPONSE] = MSG_STOP_IDALIB_RESPONSE
+
+    method: Literal["quit", "already_dead", "sigterm", "sigkill"] | None = None
+    client_id: ClientId | None = None
+    pid: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_stop_result(self):
+        self._enforce_ok("method", require_when_ok=True)
+        self._enforce_ok("pid", require_when_ok=True)
+        self._enforce_err_only("client_id", require=False)
+        return self
+
+
 Message = Annotated[
     Hello
     | HelloAck
@@ -413,6 +501,10 @@ Message = Annotated[
     | ResetResponse
     | QuitRequest
     | QuitResponse
+    | StartIdalibRequest
+    | StartIdalibResponse
+    | StopIdalibRequest
+    | StopIdalibResponse
     | ProtocolError,
     Field(discriminator="type"),
 ]

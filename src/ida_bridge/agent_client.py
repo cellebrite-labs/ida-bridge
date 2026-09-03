@@ -246,6 +246,60 @@ class AgentClient:
 
         return resp
 
+    async def start_idalib(
+        self,
+        *,
+        idb: str | None = None,
+        input_file: str | None = None,
+        out_idb: str | None = None,
+        force: bool = False,
+        arch: str | None = None,
+        dyld_module: str | None = None,
+        python: str | None = None,
+        wait_s: float = 300.0,
+    ) -> protocol.StartIdalibResponse:
+        bridge_id = self.bridge_id
+        req = protocol.StartIdalibRequest(
+            id=protocol.new_req_id(),
+            src=self._client_id,
+            dst=bridge_id,
+            idb=idb,
+            input=input_file,
+            out_idb=out_idb,
+            force=force,
+            arch=arch,
+            dyld_module=dyld_module,
+            python=python,
+            wait_s=wait_s,
+        )
+        resp = await self._request(req)
+
+        if not isinstance(resp, protocol.StartIdalibResponse):
+            await self._protocol_violation(
+                f"expected start_idalib_response, got: {getattr(resp, 'type', type(resp).__name__)}"
+            )
+        if resp.src != bridge_id:
+            await self._protocol_violation(f"start_idalib_response src mismatch: expected={bridge_id} got={resp.src}")
+        return resp
+
+    async def stop_idalib(self, target: str) -> protocol.StopIdalibResponse:
+        bridge_id = self.bridge_id
+        req = protocol.StopIdalibRequest(
+            id=protocol.new_req_id(),
+            src=self._client_id,
+            dst=bridge_id,
+            target=target,
+        )
+        resp = await self._request(req)
+
+        if not isinstance(resp, protocol.StopIdalibResponse):
+            await self._protocol_violation(
+                f"expected stop_idalib_response, got: {getattr(resp, 'type', type(resp).__name__)}"
+            )
+        if resp.src != bridge_id:
+            await self._protocol_violation(f"stop_idalib_response src mismatch: expected={bridge_id} got={resp.src}")
+        return resp
+
     async def _protocol_violation(
         self,
         detail: str,
