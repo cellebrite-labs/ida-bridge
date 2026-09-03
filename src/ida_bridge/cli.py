@@ -37,6 +37,11 @@ def main(argv: list[str] | None = None) -> int:
 
         return exec_idb_main(args[1:])
 
+    if cmd == "remote":
+        from ida_bridge.cli_remote import main as remote_main
+
+        return remote_main(args[1:])
+
     _print_usage()
     print(f"\nerror: unknown command: {cmd}", file=sys.stderr)
     return 1
@@ -51,6 +56,7 @@ def _print_usage() -> None:
         "  list [--kind]            List connected IDA clients\n"
         "  exec <target> [--stateful --session-id SID] [--sql QUERY] [-f FILE ...] [-c CODE]  Execute in IDA\n"
         "  exec-idb --idb ... [--sql QUERY] [-f FILE ...] [-c CODE]  One-shot: start idalib, exec, stop\n"
+        "  remote <cmd>             Manage headless idalib on the bridge host (start-idalib, stop)\n"
         "  reset <target> --session-id SID [--takeover|--release]  Reset stateful execution environment\n"
         "  supervisor <cmd>         Process lifecycle (start-ui, start-idalib, stop, save)\n"
     )
