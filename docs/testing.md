@@ -22,6 +22,7 @@ Bridge server with mock WebSocket clients.
 - request routing and response correlation (request types, flow matrix)
 - stateful session ownership: acquire, release, conflicts
 - connection lifecycle: reconnect, disconnect, ping timeout
+- remote headless lifecycle: bridge-host spawn dispatch, readiness correlation, guarded stop and escalation
 - backpressure and failures: queue-full, send failures
 - concurrency: multiple agents against one target
 
@@ -35,6 +36,7 @@ Full stack: bridge, real idalib, real binaries.
 - scalar functions against real data
 - cross-table queries: joins, subqueries, composite patterns
 - runtime lifecycle and loaders: idalib connect/exec/reset/shutdown, fat Mach-O arch selection, IDB create/reopen roundtrip
+- CLI-driven bridge-host idalib start/stop roundtrip
 
 ## IDA mock boundary
 

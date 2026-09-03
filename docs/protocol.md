@@ -6,8 +6,8 @@ Defines the websocket protocol between `agent`, `bridge`, and `ida`.
 
 - WebSocket, JSON over text frames
 - default URL: `ws://127.0.0.1:8765`
-- protocol version: `4`
-- local and trusted use only
+- protocol version: `5`
+- trusted deployments only; the socket may be remote or tunneled
 - no compatibility guarantees for third-party clients
 
 ## Core rules
@@ -40,7 +40,7 @@ Clients choose `client_id` during handshake.
 ## Message model
 
 All messages include:
-- `v`: protocol version integer (`4`)
+- `v`: protocol version integer (`5`)
 - `type`: message type string
 
 All requests and responses include:
@@ -70,7 +70,7 @@ The first message from a client must be `hello`.
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "hello",
   "role": "agent",
   "client_id": "agent-1",
@@ -87,7 +87,7 @@ Fields:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "hello_ack",
   "client_id": "agent-1",
   "bridge_id": "bridge",
@@ -100,11 +100,12 @@ Fields:
 
 ## Allowed routing
 
-- agent -> bridge: `list`
+- agent -> bridge: `list`, `start_idalib`, `stop_idalib`
 - agent -> ida: `exec`, `reset`, `quit`
 - ida -> agent: `exec_response`, `reset_response`, `quit_response`
-- ida -> bridge after handshake: not allowed
-- bridge -> agent: `list_response`
+- bridge -> ida: `quit` while handling `stop_idalib`
+- ida -> bridge: the correlated `quit_response`
+- bridge -> agent: `list_response`, `start_idalib_response`, `stop_idalib_response`
 - bridge -> agent: bridge-originated request failures as `exec_response`, `reset_response`, or `quit_response`
 
 ## Operations
@@ -115,7 +116,7 @@ Request:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "list",
   "id": "<uuid-v4>",
   "src": "agent-1",
@@ -131,7 +132,7 @@ Response:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "list_response",
   "id": "<uuid-v4>",
   "src": "bridge",
@@ -155,7 +156,7 @@ Stateless request:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "exec",
   "id": "<uuid-v4>",
   "src": "agent-1",
@@ -169,7 +170,7 @@ Stateful request:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "exec",
   "id": "<uuid-v4>",
   "src": "agent-1",
@@ -191,7 +192,7 @@ Success response:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "exec_response",
   "id": "<uuid-v4>",
   "src": "ida-1",
@@ -213,7 +214,7 @@ Request:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "reset",
   "id": "<uuid-v4>",
   "src": "agent-1",
@@ -242,7 +243,7 @@ Success response:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "reset_response",
   "id": "<uuid-v4>",
   "src": "ida-1",
@@ -259,7 +260,7 @@ Request:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "quit",
   "id": "<uuid-v4>",
   "src": "agent-1",
@@ -271,7 +272,7 @@ Success response:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "quit_response",
   "id": "<uuid-v4>",
   "src": "ida-1",
@@ -279,6 +280,103 @@ Success response:
   "ok": true
 }
 ```
+
+### `start_idalib`
+
+Starts a headless idalib process on the bridge host. Paths and `python` are resolved on that host, not on the agent host. The bridge passes the accepted socket's local TCP endpoint to the child so it reconnects to the same bridge.
+
+Existing IDB request:
+
+```json
+{
+  "v": 5,
+  "type": "start_idalib",
+  "id": "<uuid-v4>",
+  "src": "agent-1",
+  "dst": "bridge",
+  "idb": "/srv/idbs/sample.i64",
+  "python": "/srv/ida-venv/bin/python",
+  "wait_s": 300
+}
+```
+
+Input request:
+
+```json
+{
+  "v": 5,
+  "type": "start_idalib",
+  "id": "<uuid-v4>",
+  "src": "agent-1",
+  "dst": "bridge",
+  "input": "/srv/binaries/sample",
+  "out_idb": "/srv/idbs/sample.i64",
+  "force": true,
+  "arch": "arm64",
+  "wait_s": 300
+}
+```
+
+Fields:
+- exactly one of `idb` or `input` is required
+- `out_idb` is required with `input`
+- `force`, `arch`, and `dyld_module` are valid only with `input`
+- `arch` and `dyld_module` are mutually exclusive
+- `python` selects an interpreter on the bridge host; omission uses the bridge host's default idalib venv
+- `wait_s` is the maximum readiness wait and defaults to 300 seconds
+
+Connected response:
+
+```json
+{
+  "v": 5,
+  "type": "start_idalib_response",
+  "id": "<uuid-v4>",
+  "src": "bridge",
+  "dst": "agent-1",
+  "ok": true,
+  "status": "connected",
+  "client_id": "idalib-4242",
+  "pid": 4242,
+  "idb_path": "/srv/idbs/sample.i64",
+  "log": "/srv/logs/idalib-4242.log"
+}
+```
+
+If the child is still running when `wait_s` expires, the same success response has `status = "waiting"` and no `client_id`. The bridge continues to manage the child. A validation or early-exit failure returns `ok = false` with `code = "START_FAILED"`.
+
+### `stop_idalib`
+
+Stops a headless idalib on the bridge host without saving. The target is a connected idalib `client_id`, a connected idalib PID, or the PID of a child previously started by this bridge. Numeric targets do not authorize arbitrary process termination.
+
+```json
+{
+  "v": 5,
+  "type": "stop_idalib",
+  "id": "<uuid-v4>",
+  "src": "agent-1",
+  "dst": "bridge",
+  "target": "idalib-4242"
+}
+```
+
+The bridge first sends its own correlated `quit` request to a connected idalib. If graceful shutdown fails or times out, it terminates that PID on the bridge host. UI IDA clients are rejected.
+
+```json
+{
+  "v": 5,
+  "type": "stop_idalib_response",
+  "id": "<uuid-v4>",
+  "src": "bridge",
+  "dst": "agent-1",
+  "ok": true,
+  "method": "quit",
+  "client_id": "idalib-4242",
+  "pid": 4242
+}
+```
+
+`method` is one of `quit`, `already_dead`, `sigterm`, or `sigkill`. Failures use `TARGET_NOT_FOUND`, `INVALID_TARGET_ROLE`, or `STOP_FAILED`.
 
 ## Ownership and lifecycle semantics
 
@@ -302,6 +400,8 @@ Rules:
 Lifecycle:
 - `save` uses an exec request and may run stateless or through an existing stateful session
 - `quit` bypasses ownership because it is a lifecycle action, not exec-environment access
+- remote `start_idalib` and `stop_idalib` are bridge-host process operations and do not participate in exec ownership
+- `stop_idalib` does not save the database
 
 Ownership policy lives in the bridge, not in the IDA runtime.
 
@@ -323,6 +423,10 @@ Codes:
 - `TAKEOVER_PENDING`: ownership transfer in progress
 - `RELEASE_PENDING`: ownership release in progress
 - `SESSION_LOCKED`: ownership unknown after failed or timed-out takeover/release
+- `START_FAILED`: the bridge host rejected or failed an idalib launch
+- `STOP_FAILED`: the bridge host could not stop a resolved idalib process
+
+Remote lifecycle validation and process failures likewise use the matching `start_idalib_response` or `stop_idalib_response` with `src = bridge`, `ok = false`, and do not close the agent connection.
 
 ## Protocol errors
 
@@ -332,7 +436,7 @@ Example:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "error",
   "code": "INVALID_MESSAGE",
   "message": "invalid message",
@@ -363,6 +467,8 @@ Connection-level error codes:
 - `INVALID_REQUEST_ID`
 - `INVALID_TARGET_ROLE`
 
+`INVALID_TARGET_ROLE` is also a normal `stop_idalib_response` code when a remote stop names a connected non-idalib client.
+
 ## Correlation, ordering, and concurrency
 
 - multiple requests may be in flight concurrently
@@ -390,4 +496,5 @@ The bridge enforces request timeouts for agent -> ida routed requests.
 
 - no authentication or authorization
 - messages can request code execution inside IDA
+- remote lifecycle messages can launch idalib and terminate validated idalib PIDs on the bridge host
 - do not expose the bridge to untrusted networks

@@ -299,10 +299,35 @@ When IDA opens an IDB -- UI or headless -- it connects to the bridge server auto
 The CLI gives agents control over connected instances:
 - `ida-bridge list` -- see which IDAs are connected and which IDBs they have open
 - `ida-bridge exec` -- execute IDAPython or SQL on a specific IDA instance
-- `ida-bridge supervisor start-idalib` / `start-ui` -- launch new IDA instances
-- `ida-bridge supervisor stop` / `save` -- stop or save IDA instances
+- `ida-bridge supervisor start-idalib` / `start-ui` -- launch new IDA instances on the CLI host
+- `ida-bridge supervisor stop` / `save` -- stop or save instances in a local workflow
+- `ida-bridge remote start-idalib` / `stop` -- manage headless idalib on the bridge host
 
 This lets an agent discover available targets, run queries or code against them, and manage their lifecycle -- all through CLI.
+
+### Remote bridge host
+
+When the bridge server runs on another machine, point the local CLI at its TCP socket with `IDA_BRIDGE_HOST` and `IDA_BRIDGE_PORT` (or at the local endpoint of a TCP/SSH tunnel). Remote lifecycle supports headless idalib only; it does not start UI IDA.
+
+```bash
+# These paths and --python are resolved on the bridge server's machine.
+IDA_BRIDGE_HOST=bridge.example IDA_BRIDGE_PORT=8765 \
+  ida-bridge remote start-idalib --idb /srv/idbs/sample.i64 --json
+
+IDA_BRIDGE_HOST=bridge.example IDA_BRIDGE_PORT=8765 \
+  ida-bridge remote start-idalib \
+    --input /srv/binaries/sample \
+    --out-idb /srv/idbs/sample.i64 \
+    --python /srv/ida-venv/bin/python \
+    --force --arch arm64
+
+IDA_BRIDGE_HOST=bridge.example IDA_BRIDGE_PORT=8765 \
+  ida-bridge remote stop <client_id-or-pid>
+```
+
+`remote start-idalib` accepts the same headless input options as the local supervisor: `--idb` or `--input` with `--out-idb`, plus `--force`, `--arch`, `--dyld-module`, `--python`, and `--wait-s`. It returns `status: connected` with a `client_id`, or `status: waiting` if the bridge-host child is still analyzing when the wait expires.
+
+`remote stop` asks a connected idalib to quit, then escalates against its PID on the bridge host. It rejects UI clients and unknown numeric PIDs, and it does not save. Save first with `ida-bridge supervisor save <client_id>` or an explicit `idb.save()` exec when changes must persist. The bridge has no authentication, so expose this capability only over a trusted network or tunnel.
 
 ## Agent usage
 
