@@ -12,7 +12,14 @@ import websockets
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed
 
-from ida_bridge import logs, protocol
+from ida_bridge import logs, proc, protocol
+from ida_bridge.supervisor.commands import (
+    SpawnedIdalib,
+    StartError,
+    bind_spawned_idalib_log,
+    matches_spawned_idalib,
+    spawn_idalib,
+)
 
 HOST = protocol.bridge_host()
 PORT = protocol.bridge_port()
@@ -73,6 +80,26 @@ class _Client:
     ws: ServerConnection
     role: protocol.ClientRole
     meta: dict[str, Any]
+
+
+@dataclass(slots=True)
+class _ManagedIdalib:
+    spawned: SpawnedIdalib
+    client_id: str | None = None
+    runtime_pid: int | None = None
+
+
+@dataclass(slots=True)
+class _BridgePending:
+    ida_id: str
+    future: asyncio.Future[protocol.QuitResponse]
+
+
+@dataclass(frozen=True, slots=True)
+class _StopTarget:
+    client_id: str | None
+    pid: int
+    managed: _ManagedIdalib | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +172,8 @@ class BridgeServer:
         timeout_tick_s: float = 0.5,
         instance_id: str | None = None,
         stateful_ttl_s: float | None = None,
+        lifecycle_quit_timeout_s: float = 10.0,
+        lifecycle_exit_timeout_s: float = 20.0,
     ):
         # Defaults come from env, but tests can override everything via ctor.
         bridge_id = bridge_client_id if bridge_client_id is not None else os.getenv("IDA_BRIDGE_CLIENT_ID", "bridge")
@@ -163,11 +192,17 @@ class BridgeServer:
         ttl = stateful_ttl_s if stateful_ttl_s is not None else float(os.getenv("IDA_BRIDGE_STATEFUL_TTL_S", "3600"))
         if ttl <= 0:
             raise ValueError("stateful_ttl_s must be > 0")
+        if lifecycle_quit_timeout_s <= 0:
+            raise ValueError("lifecycle_quit_timeout_s must be > 0")
+        if lifecycle_exit_timeout_s < 0:
+            raise ValueError("lifecycle_exit_timeout_s must be >= 0")
 
         self._bridge_id = bridge_id
         self._default_timeout_s = dt
         self._timeout_tick_s = float(timeout_tick_s)
         self._stateful_ttl_s = float(ttl)
+        self._lifecycle_quit_timeout_s = float(lifecycle_quit_timeout_s)
+        self._lifecycle_exit_timeout_s = float(lifecycle_exit_timeout_s)
         self._instance_id = instance_id or f"bridge-{os.getpid()}"
 
         self._timeout_task: asyncio.Task[None] | None = None
@@ -180,6 +215,12 @@ class BridgeServer:
 
         # req_id -> _Pending
         self._pending: dict[str, _Pending] = {}
+
+        # Bridge-host root pid -> child launched through the remote API.
+        self._managed_idalib: dict[int, _ManagedIdalib] = {}
+        # Bridge-originated quit request id -> expected IDA response.
+        self._bridge_pending: dict[str, _BridgePending] = {}
+        self._stop_lock = asyncio.Lock()
 
         # ida client_id -> exec environment ownership state
         self._ownership_by_ida: dict[str, _OwnershipState] = {}
@@ -286,6 +327,7 @@ class BridgeServer:
             await asyncio.sleep(self._timeout_tick_s)
             now = loop.time()
             self._expire_ownerships(now)
+            self._reap_managed_idalib()
 
             expired: list[tuple[str, _Pending]] = [
                 (req_id, pending)
@@ -327,6 +369,14 @@ class BridgeServer:
                     },
                 )
                 await self._send_best_effort(agent.ws, payload, context="timeout")
+
+    def _reap_managed_idalib(self) -> None:
+        for root_pid, managed in list(self._managed_idalib.items()):
+            if managed.spawned.process.poll() is None:
+                continue
+            if managed.client_id is not None and managed.client_id in self._clients:
+                continue
+            self._managed_idalib.pop(root_pid, None)
 
     async def handler(self, ws: ServerConnection) -> None:
         client_role: protocol.ClientRole | None = None
@@ -414,6 +464,9 @@ class BridgeServer:
                     return
 
                 if parsed.dst == self._bridge_id:
+                    if client_role == protocol.ROLE_IDA and isinstance(parsed, protocol.ResponseBase):
+                        await self._handle_ida_message(ws, client_id, parsed)
+                        continue
                     if not isinstance(parsed, protocol.RequestBase):
                         await self._protocol_error(
                             ws,
@@ -527,6 +580,13 @@ class BridgeServer:
                 )
                 await self._send_best_effort(agent.ws, payload, context="disconnect_ida")
 
+            for req_id, pending in list(self._bridge_pending.items()):
+                if pending.ida_id != client_id:
+                    continue
+                self._bridge_pending.pop(req_id, None)
+                if not pending.future.done():
+                    pending.future.set_exception(ConnectionError(f"IDA disconnected: {client_id}"))
+
     async def _protocol_error(
         self,
         ws: ServerConnection,
@@ -584,6 +644,7 @@ class BridgeServer:
         elif msg.role == protocol.ROLE_IDA:
             idb = os.path.basename(msg.meta.get("idb_path", "")) or "(no idb)"
             log.info("IDA connected: %s [%s]", client_id, idb)
+            await self._associate_managed_idalib(client_id, self._clients[client_id])
 
         ack = protocol.HelloAck(
             client_id=client_id,
@@ -623,12 +684,315 @@ class BridgeServer:
             await self._handle_list(ws, client_id, msg)
             return
 
+        if isinstance(msg, protocol.StartIdalibRequest):
+            await self._handle_start_idalib(ws, client_id, msg)
+            return
+
+        if isinstance(msg, protocol.StopIdalibRequest):
+            await self._handle_stop_idalib(ws, client_id, msg)
+            return
+
         await self._protocol_error(
             ws,
             code=protocol.ERR_UNSUPPORTED_MESSAGE,
             message="unsupported message to bridge",
             trace={"type": msg.type},
         )
+
+    @staticmethod
+    def _bridge_endpoint(ws: ServerConnection) -> tuple[str, int]:
+        address = ws.local_address
+        if not isinstance(address, tuple) or len(address) < 2:
+            raise RuntimeError("cannot determine bridge TCP endpoint")
+        host, port = address[0], address[1]
+        if not isinstance(host, str) or not isinstance(port, int):
+            raise RuntimeError("cannot determine bridge TCP endpoint")
+        return host, port
+
+    async def _associate_managed_idalib(self, client_id: str, client: _Client) -> _ManagedIdalib | None:
+        if client.role != protocol.ROLE_IDA:
+            return None
+        info = protocol.ClientInfo(client_id=client_id, role=protocol.ROLE_IDA, meta=client.meta)
+        for managed in list(self._managed_idalib.values()):
+            if managed.client_id is not None:
+                continue
+            if not await asyncio.to_thread(matches_spawned_idalib, info, managed.spawned):
+                continue
+            managed.client_id = client_id
+            runtime_pid = client.meta.get("pid")
+            if isinstance(runtime_pid, int):
+                managed.runtime_pid = runtime_pid
+                bind_spawned_idalib_log(managed.spawned, runtime_pid)
+            return managed
+        return None
+
+    async def _find_spawned_client(
+        self,
+        managed: _ManagedIdalib,
+        *,
+        exclude: set[str],
+    ) -> protocol.ClientInfo | None:
+        if managed.client_id is not None:
+            client = self._clients.get(managed.client_id)
+            if client is not None:
+                return protocol.ClientInfo(client_id=managed.client_id, role=protocol.ROLE_IDA, meta=client.meta)
+
+        for client_id, client in list(self._clients.items()):
+            if client_id in exclude or client.role != protocol.ROLE_IDA:
+                continue
+            info = protocol.ClientInfo(client_id=client_id, role=protocol.ROLE_IDA, meta=client.meta)
+            if await asyncio.to_thread(matches_spawned_idalib, info, managed.spawned):
+                managed.client_id = client_id
+                runtime_pid = client.meta.get("pid")
+                if isinstance(runtime_pid, int):
+                    managed.runtime_pid = runtime_pid
+                    bind_spawned_idalib_log(managed.spawned, runtime_pid)
+                return info
+        return None
+
+    async def _wait_for_spawned_client(
+        self,
+        managed: _ManagedIdalib,
+        *,
+        exclude: set[str],
+        timeout_s: float,
+    ) -> protocol.ClientInfo | None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        while True:
+            if matched := await self._find_spawned_client(managed, exclude=exclude):
+                return matched
+            return_code = await asyncio.to_thread(managed.spawned.process.poll)
+            if return_code is not None:
+                self._managed_idalib.pop(managed.spawned.pid, None)
+                raise StartError(f"idalib runner exited early with code {return_code}")
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return None
+            await asyncio.sleep(min(0.1, remaining))
+
+    async def _handle_start_idalib(
+        self,
+        ws: ServerConnection,
+        agent_id: str,
+        msg: protocol.StartIdalibRequest,
+    ) -> None:
+        existing = set(self._clients)
+        spawned: SpawnedIdalib | None = None
+        try:
+            bridge_host, bridge_port = self._bridge_endpoint(ws)
+            spawned = await asyncio.to_thread(
+                spawn_idalib,
+                idb=msg.idb,
+                input_file=msg.input,
+                out_idb=msg.out_idb,
+                force=msg.force,
+                arch=msg.arch,
+                dyld_module=msg.dyld_module,
+                python=msg.python,
+                bridge_host=bridge_host,
+                bridge_port=bridge_port,
+            )
+            managed = _ManagedIdalib(spawned=spawned)
+            self._managed_idalib[spawned.pid] = managed
+            matched = await self._wait_for_spawned_client(managed, exclude=existing, timeout_s=msg.wait_s)
+        except Exception as exc:
+            trace = {"log": spawned.log_path} if spawned is not None else None
+            if spawned is not None and spawned.process.poll() is None and not isinstance(exc, StartError):
+                self._managed_idalib.pop(spawned.pid, None)
+                await asyncio.to_thread(proc.terminate_pid, spawned.pid, timeout_s=2.0)
+            payload = protocol.StartIdalibResponse(
+                id=msg.id,
+                src=self._bridge_id,
+                dst=agent_id,
+                ok=False,
+                code=protocol.ERR_START_FAILED,
+                message=str(exc),
+                trace=trace,
+            )
+            await self._send_best_effort(ws, payload, context="start_idalib_error")
+            return
+
+        runtime_pid = managed.runtime_pid or spawned.pid
+        idb_path = spawned.expected_idb_path
+        if matched is not None:
+            connected_path = (matched.meta or {}).get("idb_path")
+            if isinstance(connected_path, str) and connected_path:
+                idb_path = connected_path
+        payload = protocol.StartIdalibResponse(
+            id=msg.id,
+            src=self._bridge_id,
+            dst=agent_id,
+            ok=True,
+            status="connected" if matched is not None else "waiting",
+            client_id=matched.client_id if matched is not None else None,
+            pid=runtime_pid,
+            idb_path=idb_path,
+            log=spawned.log_path,
+        )
+        await self._send_best_effort(ws, payload, context="start_idalib")
+
+    def _managed_for_client(self, client_id: str) -> _ManagedIdalib | None:
+        return next((item for item in self._managed_idalib.values() if item.client_id == client_id), None)
+
+    def _resolve_stop_target(self, target: str) -> _StopTarget | _ForwardReject:
+        if not target.isdigit():
+            client = self._clients.get(target)
+            managed = self._managed_for_client(target)
+            if client is None:
+                if managed is not None:
+                    return _StopTarget(
+                        client_id=None,
+                        pid=managed.runtime_pid or managed.spawned.pid,
+                        managed=managed,
+                    )
+                return _ForwardReject(protocol.ERR_TARGET_NOT_FOUND, "idalib instance not found", {"target": target})
+            if client.role != protocol.ROLE_IDA or client.meta.get("runtime") != "idalib":
+                return _ForwardReject(
+                    protocol.ERR_INVALID_TARGET_ROLE,
+                    "target must be a headless idalib client",
+                    {"target": target, "role": client.role, "runtime": client.meta.get("runtime")},
+                )
+            pid = client.meta.get("pid")
+            if not isinstance(pid, int) or pid <= 0:
+                return _ForwardReject(protocol.ERR_STOP_FAILED, "idalib client has no valid pid", {"target": target})
+            return _StopTarget(client_id=target, pid=pid, managed=managed)
+
+        pid = int(target)
+        for client_id, client in self._clients.items():
+            if client.role != protocol.ROLE_IDA or client.meta.get("pid") != pid:
+                continue
+            if client.meta.get("runtime") != "idalib":
+                return _ForwardReject(
+                    protocol.ERR_INVALID_TARGET_ROLE,
+                    "target pid belongs to a non-idalib client",
+                    {"target": target, "runtime": client.meta.get("runtime")},
+                )
+            return _StopTarget(client_id=client_id, pid=pid, managed=self._managed_for_client(client_id))
+
+        for managed in self._managed_idalib.values():
+            if pid in (managed.spawned.pid, managed.runtime_pid):
+                return _StopTarget(client_id=managed.client_id, pid=managed.runtime_pid or pid, managed=managed)
+        return _ForwardReject(protocol.ERR_TARGET_NOT_FOUND, "idalib instance not found", {"target": target})
+
+    async def _handle_bridge_response(
+        self,
+        ws: ServerConnection,
+        ida_id: str,
+        msg: protocol.ResponseBase,
+    ) -> None:
+        pending = self._bridge_pending.get(msg.id)
+        if pending is None:
+            log.warning("Dropping response for unknown bridge request: ida=%s type=%s id=%s", ida_id, msg.type, msg.id[:8])
+            return
+        if pending.ida_id != ida_id or not isinstance(msg, protocol.QuitResponse):
+            self._bridge_pending.pop(msg.id, None)
+            if not pending.future.done():
+                pending.future.set_exception(RuntimeError("bridge response mismatch"))
+            await self._protocol_error(
+                ws,
+                code=protocol.ERR_RESPONSE_MISMATCH,
+                message="response does not match bridge request",
+                trace={
+                    "id": msg.id,
+                    "expected_ida_id": pending.ida_id,
+                    "got_ida_id": ida_id,
+                    "got_type": msg.type,
+                },
+            )
+            return
+        self._bridge_pending.pop(msg.id, None)
+        if not pending.future.done():
+            pending.future.set_result(msg)
+
+    async def _request_idalib_quit(self, client_id: str) -> bool:
+        client = self._clients.get(client_id)
+        if client is None or client.role != protocol.ROLE_IDA:
+            return False
+        req = protocol.QuitRequest(id=protocol.new_req_id(), src=self._bridge_id, dst=client_id)
+        future: asyncio.Future[protocol.QuitResponse] = asyncio.get_running_loop().create_future()
+        self._bridge_pending[req.id] = _BridgePending(ida_id=client_id, future=future)
+        if not await self._send_best_effort(client.ws, req, context="remote_stop_quit"):
+            self._bridge_pending.pop(req.id, None)
+            return False
+        try:
+            response = await asyncio.wait_for(future, timeout=self._lifecycle_quit_timeout_s)
+        except (TimeoutError, ConnectionError):
+            return False
+        finally:
+            self._bridge_pending.pop(req.id, None)
+        return response.ok
+
+    def _forget_managed(self, target: _StopTarget) -> None:
+        for root_pid, managed in list(self._managed_idalib.items()):
+            if managed is target.managed or managed.client_id == target.client_id or target.pid in (
+                managed.spawned.pid,
+                managed.runtime_pid,
+            ):
+                self._managed_idalib.pop(root_pid, None)
+
+    async def _send_stop_error(
+        self,
+        ws: ServerConnection,
+        agent_id: str,
+        msg: protocol.StopIdalibRequest,
+        rejection: _ForwardReject,
+    ) -> None:
+        payload = protocol.StopIdalibResponse(
+            id=msg.id,
+            src=self._bridge_id,
+            dst=agent_id,
+            ok=False,
+            code=rejection.code,
+            message=rejection.message,
+            trace=rejection.trace,
+        )
+        await self._send_best_effort(ws, payload, context="stop_idalib_error")
+
+    async def _handle_stop_idalib(
+        self,
+        ws: ServerConnection,
+        agent_id: str,
+        msg: protocol.StopIdalibRequest,
+    ) -> None:
+        resolved = self._resolve_stop_target(msg.target)
+        if isinstance(resolved, _ForwardReject):
+            await self._send_stop_error(ws, agent_id, msg, resolved)
+            return
+
+        try:
+            async with self._stop_lock:
+                method: str | None = None
+                if resolved.client_id is not None and await self._request_idalib_quit(resolved.client_id):
+                    exited = await asyncio.to_thread(
+                        proc.wait_for_exit,
+                        resolved.pid,
+                        timeout_s=self._lifecycle_exit_timeout_s,
+                    )
+                    if exited:
+                        method = "quit"
+                if method is None:
+                    method = await asyncio.to_thread(proc.terminate_pid, resolved.pid)
+                self._forget_managed(resolved)
+        except Exception as exc:
+            await self._send_stop_error(
+                ws,
+                agent_id,
+                msg,
+                _ForwardReject(protocol.ERR_STOP_FAILED, str(exc), {"target": msg.target, "pid": resolved.pid}),
+            )
+            return
+
+        payload = protocol.StopIdalibResponse(
+            id=msg.id,
+            src=self._bridge_id,
+            dst=agent_id,
+            ok=True,
+            method=method,
+            client_id=resolved.client_id,
+            pid=resolved.pid,
+        )
+        await self._send_best_effort(ws, payload, context="stop_idalib")
 
     async def _handle_agent_message(self, ws: ServerConnection, client_id: str, msg: protocol.RequestBase) -> None:
         if isinstance(msg, (protocol.ExecRequest, protocol.ResetRequest)):
@@ -647,6 +1011,9 @@ class BridgeServer:
         )
 
     async def _handle_ida_message(self, ws: ServerConnection, client_id: str, msg: protocol.ResponseBase) -> None:
+        if msg.dst == self._bridge_id:
+            await self._handle_bridge_response(ws, client_id, msg)
+            return
         if isinstance(msg, (protocol.ExecResponse, protocol.ResetResponse, protocol.QuitResponse)):
             await self._forward_to_agent(client_id, msg)
             return

@@ -447,6 +447,12 @@ def matches_spawned_idalib(client: protocol.ClientInfo, spawned: SpawnedIdalib) 
     return isinstance(got_path, str) and _same_path(got_path, spawned.expected_idb_path)
 
 
+def bind_spawned_idalib_log(spawned: SpawnedIdalib, pid: int) -> str:
+    """Bind a spawned runner log to the PID reported by the connected runtime."""
+    spawned.log_path = _bind_log_to_pid(Path(spawned.log_path), "idalib", pid)
+    return spawned.log_path
+
+
 def start_idalib(
     *,
     idb: str | None = None,
@@ -501,7 +507,7 @@ def start_idalib(
         connected_pid = (matched.meta or {}).get("pid")
         if isinstance(connected_pid, int):
             result_pid = connected_pid
-    log_path = _bind_log_to_pid(Path(spawned.log_path), "idalib", result_pid)
+    log_path = bind_spawned_idalib_log(spawned, result_pid)
 
     if matched is None:
         return_code = spawned.process.poll()
