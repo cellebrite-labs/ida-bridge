@@ -92,6 +92,7 @@ Shared instance means shared IDB: co-tenants edit the same database, so another 
 ### Hangs and timeouts
 
 - Exec runs on IDA's main thread and cannot be interrupted. The WebSocket connection runs on a separate thread, so a live connection does not imply exec is responsive.
+- Each request retains and mirrors at most 1 MiB per stdout/stderr stream. Excess output is discarded after an `[ida-bridge output truncated]` marker, but the underlying code continues to run.
 - UI IDA only: many ops (opening a binary, a write, a plugin, decompiling) can pop a modal dialog that blocks exec until a human dismisses it. If a UI-IDA exec hangs, a dialog could be the reason -- ask the user to check.
 - Default timeout is 60s (`--timeout-s`); raise it only for known-heavy ops, and use `--timeout-s 0` only to wait indefinitely.
 - On timeout, do not blindly retry the same command:
@@ -103,6 +104,7 @@ Shared instance means shared IDB: co-tenants edit the same database, so another 
 - Default output is sectioned human output. First line is `exec: ok` or `exec: error`.
 - On success, structured data returned through `_result_` appears under `--- result ---`. If there is no result section, the command succeeded but returned no structured data.
 - stdout/stderr from code executed inside IDA are captured and returned under `--- stdout ---` / `--- stderr ---`. `print()` writes to stdout. Treat these sections as logs; put machine-consumable data in `_result_`.
+- A stdout or stderr section ending with `[ida-bridge output truncated]` reached its 1 MiB limit. Narrow the script's logging instead of retrying for more output.
 - On failure, read `error code`, `error message`, and `hint` first. `--- traceback ---` is from code executed inside IDA (`--sql`, `-f`, `-c`). `--- bridge trace ---` is bridge/protocol/routing diagnostic context.
 - Use `--json` only when a script/tool needs the raw response envelope.
 

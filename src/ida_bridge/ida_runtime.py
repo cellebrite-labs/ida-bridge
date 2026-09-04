@@ -10,6 +10,52 @@ from typing import Any
 
 from . import protocol
 
+EXEC_OUTPUT_LIMIT_BYTES = 1024 * 1024
+OUTPUT_TRUNCATION_MARKER = "\n[ida-bridge output truncated]\n"
+
+
+class BoundedTextWriter(io.TextIOBase):
+    """Forward a valid UTF-8 prefix to a text stream, then one marker."""
+
+    def __init__(self, stream: Any, *, max_bytes: int = EXEC_OUTPUT_LIMIT_BYTES):
+        marker_bytes = OUTPUT_TRUNCATION_MARKER.encode("utf-8")
+        if max_bytes < len(marker_bytes):
+            raise ValueError("max_bytes must fit the output truncation marker")
+
+        self._stream = stream
+        self._payload_max_bytes = max_bytes - len(marker_bytes)
+        self._payload_bytes = 0
+        self._truncated = False
+
+    @property
+    def truncated(self) -> bool:
+        return self._truncated
+
+    def write(self, s: str) -> int:
+        requested = len(s)
+        if not s or self._truncated:
+            return requested
+
+        remaining = self._payload_max_bytes - self._payload_bytes
+        candidate = s[:remaining]
+        encoded = candidate.encode("utf-8")
+        complete = len(candidate) == requested and len(encoded) <= remaining
+        if complete:
+            self._stream.write(s)
+            self._payload_bytes += len(encoded)
+            return requested
+
+        prefix = encoded[:remaining].decode("utf-8", errors="ignore")
+        if prefix:
+            self._stream.write(prefix)
+            self._payload_bytes += len(prefix.encode("utf-8"))
+        self._stream.write(OUTPUT_TRUNCATION_MARKER)
+        self._truncated = True
+        return requested
+
+    def flush(self) -> None:
+        self._stream.flush()
+
 
 def serialize_result(obj: Any, *, depth: int = 0, max_depth: int = 4) -> Any:
     """Serialize Python objects to JSON-compatible values."""
@@ -82,20 +128,26 @@ def run_user_code(
     *,
     code: str,
     exec_env: dict[str, Any],
+    output_limit_bytes: int = EXEC_OUTPUT_LIMIT_BYTES,
 ) -> tuple[Any, str, str, Exception | None]:
     """Execute user code with stdout/stderr capture.
 
     Returns (value, stdout, stderr, error).
-    Tees captured output to the original streams so a human can observe it.
+    Each captured and mirrored stream is independently limited to
+    ``output_limit_bytes`` so user output cannot grow memory or logs without bound.
     """
 
     value: Any = None
     err: Exception | None = None
 
     old_stdout, old_stderr = sys.stdout, sys.stderr
-    cap_out, cap_err = io.StringIO(), io.StringIO()
-    sys.stdout = Tee(cap_out, old_stdout)
-    sys.stderr = Tee(cap_err, old_stderr)
+    out_storage, err_storage = io.StringIO(), io.StringIO()
+    cap_out = BoundedTextWriter(out_storage, max_bytes=output_limit_bytes)
+    cap_err = BoundedTextWriter(err_storage, max_bytes=output_limit_bytes)
+    mirror_out = BoundedTextWriter(old_stdout, max_bytes=output_limit_bytes)
+    mirror_err = BoundedTextWriter(old_stderr, max_bytes=output_limit_bytes)
+    sys.stdout = Tee(cap_out, mirror_out)
+    sys.stderr = Tee(cap_err, mirror_err)
     try:
         exec(code, exec_env, exec_env)
         if "_result_" in exec_env:
@@ -105,7 +157,7 @@ def run_user_code(
     finally:
         sys.stdout, sys.stderr = old_stdout, old_stderr
 
-    return value, cap_out.getvalue(), cap_err.getvalue(), err
+    return value, out_storage.getvalue(), err_storage.getvalue(), err
 
 
 # ---------------------------------------------------------------------------

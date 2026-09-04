@@ -6,7 +6,9 @@ import queue
 import pytest
 
 from ida_bridge.ida_runtime import (
+    OUTPUT_TRUNCATION_MARKER,
     QUEUE_SENTINEL,
+    BoundedTextWriter,
     RequestHandler,
     Tee,
     build_exec_error,
@@ -191,6 +193,72 @@ class TestSerializeQueryResult:
 
 
 # ---------------------------------------------------------------------------
+# BoundedTextWriter
+# ---------------------------------------------------------------------------
+
+
+class TestBoundedTextWriter:
+    def test_accepts_payload_up_to_reserved_marker_boundary(self) -> None:
+        target = io.StringIO()
+        limit = len(OUTPUT_TRUNCATION_MARKER.encode("utf-8")) + 4
+        writer = BoundedTextWriter(target, max_bytes=limit)
+
+        assert writer.write("abcd") == 4
+        assert target.getvalue() == "abcd"
+        assert writer.truncated is False
+
+    def test_overflow_appends_one_marker_within_limit(self) -> None:
+        target = io.StringIO()
+        limit = len(OUTPUT_TRUNCATION_MARKER.encode("utf-8")) + 4
+        writer = BoundedTextWriter(target, max_bytes=limit)
+
+        assert writer.write("abcdef") == 6
+        value = target.getvalue()
+        assert value == f"abcd{OUTPUT_TRUNCATION_MARKER}"
+        assert len(value.encode("utf-8")) == limit
+        assert writer.truncated is True
+
+    def test_later_writes_do_not_grow_target(self) -> None:
+        target = io.StringIO()
+        limit = len(OUTPUT_TRUNCATION_MARKER.encode("utf-8")) + 1
+        writer = BoundedTextWriter(target, max_bytes=limit)
+        writer.write("too much")
+        before = target.getvalue()
+
+        assert writer.write("still too much") == len("still too much")
+        assert target.getvalue() == before
+        assert before.count(OUTPUT_TRUNCATION_MARKER) == 1
+
+    def test_utf8_prefix_is_valid_and_within_byte_limit(self) -> None:
+        target = io.StringIO()
+        limit = len(OUTPUT_TRUNCATION_MARKER.encode("utf-8")) + 5
+        writer = BoundedTextWriter(target, max_bytes=limit)
+
+        assert writer.write("ééé") == 3
+        value = target.getvalue()
+        assert value == f"éé{OUTPUT_TRUNCATION_MARKER}"
+        assert len(value.encode("utf-8")) <= limit
+
+    def test_flush_delegates_to_target(self) -> None:
+        flushed = False
+
+        class FakeStream:
+            def write(self, s: str) -> int:
+                return len(s)
+
+            def flush(self) -> None:
+                nonlocal flushed
+                flushed = True
+
+        writer = BoundedTextWriter(
+            FakeStream(),
+            max_bytes=len(OUTPUT_TRUNCATION_MARKER.encode("utf-8")) + 1,
+        )
+        writer.flush()
+        assert flushed is True
+
+
+# ---------------------------------------------------------------------------
 # Tee
 # ---------------------------------------------------------------------------
 
@@ -265,6 +333,20 @@ class TestRunUserCode:
         code = "import sys; sys.stderr.write('warn\\n')"
         value, stdout, stderr, err = run_user_code(code=code, exec_env=env)
         assert stderr == "warn\n"
+        assert err is None
+
+    def test_exec_bounds_stdout_and_stderr_independently(self) -> None:
+        env: dict = {"__name__": "__test__", "__builtins__": __builtins__}
+        limit = len(OUTPUT_TRUNCATION_MARKER.encode("utf-8")) + 4
+        code = "import sys; print('abcdef', end=''); sys.stderr.write('uvwxyz')"
+
+        value, stdout, stderr, err = run_user_code(code=code, exec_env=env, output_limit_bytes=limit)
+
+        assert value is None
+        assert stdout == f"abcd{OUTPUT_TRUNCATION_MARKER}"
+        assert stderr == f"uvwx{OUTPUT_TRUNCATION_MARKER}"
+        assert len(stdout.encode("utf-8")) <= limit
+        assert len(stderr.encode("utf-8")) <= limit
         assert err is None
 
     def test_exec_result_convention(self) -> None:

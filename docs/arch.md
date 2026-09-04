@@ -35,6 +35,7 @@ Bridge:
 IDA runtime:
 - owns `_exec_env`
 - executes requests in the correct runtime thread model
+- bounds each request's captured and mirrored stdout/stderr stream to 1 MiB
 - returns responses
 - owns the quit flag
 - does not enforce bridge routing or ownership policy
