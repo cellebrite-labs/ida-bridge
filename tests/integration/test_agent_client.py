@@ -1,6 +1,7 @@
 """Tests for ida_bridge.agent_client (AgentClient state management and error paths)."""
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -284,6 +285,69 @@ class TestErrorResponses:
                 assert resp.code == protocol.ERR_TARGET_NOT_FOUND
             finally:
                 await client.close()
+
+
+class TestRemoteIdalibLifecycleRequests:
+    async def test_start_idalib_addresses_bridge_and_maps_input_name(self) -> None:
+        client = AgentClient(client_id="agent-1")
+        client._bridge_id = "bridge-1"
+        response = protocol.StartIdalibResponse(
+            id=protocol.new_req_id(),
+            src="bridge-1",
+            dst="agent-1",
+            ok=True,
+            status="waiting",
+            pid=42,
+            idb_path="/srv/idbs/sample.i64",
+            log="/srv/logs/idalib-42.log",
+        )
+        request = AsyncMock(return_value=response)
+        client._request = request
+
+        result = await client.start_idalib(
+            input_file="/srv/bins/sample",
+            out_idb="/srv/idbs/sample.i64",
+            force=True,
+            arch="arm64",
+            python="/srv/venv/bin/python",
+            wait_s=12.5,
+        )
+
+        assert result is response
+        sent = request.await_args.args[0]
+        assert isinstance(sent, protocol.StartIdalibRequest)
+        assert sent.src == "agent-1"
+        assert sent.dst == "bridge-1"
+        assert sent.input == "/srv/bins/sample"
+        assert sent.out_idb == "/srv/idbs/sample.i64"
+        assert sent.force is True
+        assert sent.arch == "arm64"
+        assert sent.python == "/srv/venv/bin/python"
+        assert sent.wait_s == 12.5
+
+    async def test_stop_idalib_addresses_bridge(self) -> None:
+        client = AgentClient(client_id="agent-1")
+        client._bridge_id = "bridge-1"
+        response = protocol.StopIdalibResponse(
+            id=protocol.new_req_id(),
+            src="bridge-1",
+            dst="agent-1",
+            ok=True,
+            method="quit",
+            client_id="idalib-42",
+            pid=42,
+        )
+        request = AsyncMock(return_value=response)
+        client._request = request
+
+        result = await client.stop_idalib("idalib-42")
+
+        assert result is response
+        sent = request.await_args.args[0]
+        assert isinstance(sent, protocol.StopIdalibRequest)
+        assert sent.src == "agent-1"
+        assert sent.dst == "bridge-1"
+        assert sent.target == "idalib-42"
 
 
 # ---------------------------------------------------------------------------

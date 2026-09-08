@@ -2,12 +2,21 @@
 
 from pathlib import Path
 import sys
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ida_bridge import protocol
 from ida_bridge.supervisor import commands
-from ida_bridge.supervisor.commands import StartError, default_idalib_python, start_idalib
+from ida_bridge.supervisor.commands import (
+    SpawnedIdalib,
+    StartError,
+    default_idalib_python,
+    matches_spawned_idalib,
+    spawn_idalib,
+    start_idalib,
+)
 
 
 class TestDefaultIdalibPython:
@@ -87,3 +96,70 @@ class TestCleanEnv:
         monkeypatch.delenv("IDAPYTHON_VENV_EXECUTABLE", raising=False)
 
         assert "IDAPYTHON_VENV_EXECUTABLE" not in commands._clean_env()
+
+
+class TestSpawnIdalib:
+    def test_uses_bridge_host_paths_and_connection_endpoint(self, tmp_path: Path) -> None:
+        idb = tmp_path / "sample.i64"
+        idb.write_bytes(b"idb")
+        runner = tmp_path / "idalib_runner.py"
+        runner.write_text("# test\n", encoding="utf-8")
+        tmp_log = tmp_path / "starting.log"
+        process = SimpleNamespace(pid=4242)
+        popen = MagicMock(return_value=process)
+
+        with (
+            patch("ida_bridge.supervisor.commands._resolve_python", return_value="/srv/venv/bin/python"),
+            patch("ida_bridge.supervisor.commands._idalib_runner_path", return_value=runner),
+            patch("ida_bridge.supervisor.commands._starting_log_path", return_value=tmp_log),
+            patch("ida_bridge.supervisor.commands._bind_log_to_pid", return_value=str(tmp_path / "idalib-4242.log")),
+            patch("ida_bridge.supervisor.commands.subprocess.Popen", popen),
+        ):
+            spawned = spawn_idalib(
+                idb=str(idb),
+                python="/srv/venv/bin/python",
+                bridge_host="10.0.0.5",
+                bridge_port=9911,
+            )
+
+        assert spawned.process is process
+        assert spawned.pid == 4242
+        assert spawned.expected_idb_path == str(idb.resolve())
+        assert spawned.log_path == str(tmp_path / "idalib-4242.log")
+        call = popen.call_args
+        assert call.args[0] == ["/srv/venv/bin/python", str(runner), "--idb", str(idb.resolve())]
+        assert call.kwargs["env"]["IDA_BRIDGE_HOST"] == "10.0.0.5"
+        assert call.kwargs["env"]["IDA_BRIDGE_PORT"] == "9911"
+        assert call.kwargs["stdout"].closed is True
+
+    def test_rejects_partial_bridge_endpoint(self, tmp_path: Path) -> None:
+        idb = tmp_path / "sample.i64"
+        idb.write_bytes(b"idb")
+        with pytest.raises(ValueError, match="bridge_host and bridge_port"):
+            spawn_idalib(idb=str(idb), bridge_host="127.0.0.1")
+
+
+class TestMatchesSpawnedIdalib:
+    def test_matches_idalib_runtime_by_pid(self) -> None:
+        spawned = SpawnedIdalib(
+            process=SimpleNamespace(pid=4242),
+            expected_idb_path="/srv/idbs/sample.i64",
+            log_path="/srv/logs/idalib-4242.log",
+        )
+
+        assert matches_spawned_idalib(
+            protocol.ClientInfo(
+                client_id="idalib-4242",
+                role=protocol.ROLE_IDA,
+                meta={"runtime": "idalib", "pid": 4242, "idb_path": "/srv/idbs/sample.i64"},
+            ),
+            spawned,
+        )
+        assert not matches_spawned_idalib(
+            protocol.ClientInfo(
+                client_id="idaui-4242",
+                role=protocol.ROLE_IDA,
+                meta={"runtime": "ui", "pid": 4242, "idb_path": "/srv/idbs/sample.i64"},
+            ),
+            spawned,
+        )

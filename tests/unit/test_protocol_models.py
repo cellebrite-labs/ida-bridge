@@ -355,3 +355,137 @@ def test_list_response_ok_false_forbids_clients_and_requires_code() -> None:
             kind=protocol.LIST_KIND_ALL,
             clients=[],
         )
+
+
+def test_protocol_version_is_bumped_for_remote_lifecycle_messages() -> None:
+    assert protocol.PROTO_VERSION == 5
+
+
+def test_start_idalib_request_accepts_existing_idb() -> None:
+    parsed = protocol.parse_message_json(
+        json.dumps(
+            {
+                "v": protocol.PROTO_VERSION,
+                "type": protocol.MSG_START_IDALIB,
+                "id": UUID_V4,
+                "src": "agent-1",
+                "dst": "bridge",
+                "idb": "/srv/idbs/sample.i64",
+                "python": "/srv/venv/bin/python",
+                "wait_s": 12.5,
+            }
+        )
+    )
+
+    assert isinstance(parsed, protocol.StartIdalibRequest)
+    assert parsed.idb == "/srv/idbs/sample.i64"
+    assert parsed.input is None
+    assert parsed.python == "/srv/venv/bin/python"
+    assert parsed.wait_s == 12.5
+
+
+def test_start_idalib_request_accepts_input_options() -> None:
+    req = protocol.StartIdalibRequest(
+        id=UUID_V4,
+        src="agent-1",
+        dst="bridge",
+        input="/srv/bins/sample",
+        out_idb="/srv/idbs/sample.i64",
+        force=True,
+        arch="arm64",
+    )
+
+    assert req.input == "/srv/bins/sample"
+    assert req.out_idb == "/srv/idbs/sample.i64"
+    assert req.force is True
+    assert req.arch == "arm64"
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({}, "exactly one"),
+        ({"idb": "/a.i64", "input": "/a"}, "exactly one"),
+        ({"input": "/a"}, "--out-idb is required"),
+        ({"idb": "/a.i64", "out_idb": "/b.i64"}, "only valid with --input"),
+        ({"idb": "/a.i64", "force": True}, "only valid with --input"),
+        ({"idb": "/a.i64", "arch": "arm64"}, "only valid with --input"),
+        ({"idb": "/a.i64", "dyld_module": "lib.dylib"}, "only valid with --input"),
+        (
+            {"input": "/a", "out_idb": "/a.i64", "arch": "arm64", "dyld_module": "lib.dylib"},
+            "mutually exclusive",
+        ),
+    ],
+)
+def test_start_idalib_request_rejects_invalid_option_combinations(fields, message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        protocol.StartIdalibRequest(id=UUID_V4, src="agent-1", dst="bridge", **fields)
+
+
+def test_start_idalib_response_enforces_status_fields() -> None:
+    connected = protocol.StartIdalibResponse(
+        id=UUID_V4,
+        src="bridge",
+        dst="agent-1",
+        ok=True,
+        status="connected",
+        client_id="idalib-42",
+        pid=42,
+        idb_path="/srv/idbs/sample.i64",
+        log="/srv/logs/idalib-42.log",
+    )
+    assert connected.client_id == "idalib-42"
+
+    waiting = connected.model_copy(update={"status": "waiting", "client_id": None})
+    assert protocol.StartIdalibResponse.model_validate(waiting.model_dump()).status == "waiting"
+
+    with pytest.raises(ValidationError, match="client_id is required"):
+        protocol.StartIdalibResponse(
+            id=UUID_V4,
+            src="bridge",
+            dst="agent-1",
+            ok=True,
+            status="connected",
+            pid=42,
+            idb_path="/srv/idbs/sample.i64",
+            log="/srv/logs/idalib-42.log",
+        )
+
+    with pytest.raises(ValidationError, match="must be absent"):
+        protocol.StartIdalibResponse(
+            id=UUID_V4,
+            src="bridge",
+            dst="agent-1",
+            ok=False,
+            code=protocol.ERR_START_FAILED,
+            status="waiting",
+        )
+
+
+def test_stop_idalib_models_enforce_success_fields() -> None:
+    req = protocol.StopIdalibRequest(id=UUID_V4, src="agent-1", dst="bridge", target="idalib-42")
+    assert req.target == "idalib-42"
+
+    resp = protocol.StopIdalibResponse(
+        id=UUID_V4,
+        src="bridge",
+        dst="agent-1",
+        ok=True,
+        method="quit",
+        client_id="idalib-42",
+        pid=42,
+    )
+    assert resp.method == "quit"
+
+    with pytest.raises(ValidationError, match="method is required"):
+        protocol.StopIdalibResponse(id=UUID_V4, src="bridge", dst="agent-1", ok=True, pid=42)
+
+    with pytest.raises(ValidationError, match="must be absent"):
+        protocol.StopIdalibResponse(
+            id=UUID_V4,
+            src="bridge",
+            dst="agent-1",
+            ok=False,
+            code=protocol.ERR_STOP_FAILED,
+            method="sigterm",
+        )

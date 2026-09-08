@@ -17,10 +17,10 @@ This file keeps only the structural facts that are easy to forget. `README.md`, 
 ## Components
 
 - agent client -- CLI or agent-authored code sending requests
-- bridge server -- authoritative websocket router and policy layer
+- bridge server -- authoritative websocket router, policy layer, and remote headless process supervisor
 - UI IDA client -- plugin-hosted runtime inside desktop IDA
 - idalib runner -- headless runtime process
-- supervisor -- lifecycle commands for start, save, and stop
+- local supervisor -- lifecycle commands executed on the CLI host
 
 ## Ownership of concerns
 
@@ -30,7 +30,8 @@ Bridge:
 - enforces request and response correlation
 - enforces exec-environment ownership policy
 - tracks pending requests and timeouts
-- does not spawn or execute IDA
+- starts, tracks, reaps, and stops headless idalib children for remote lifecycle requests
+- never starts UI IDA
 
 IDA runtime:
 - owns `_exec_env`
@@ -40,8 +41,8 @@ IDA runtime:
 - does not enforce bridge routing or ownership policy
 
 Supervisor:
-- starts and stops runtimes
-- provides lifecycle commands
+- starts and stops runtimes on the CLI host
+- provides local lifecycle commands, including UI IDA
 - does not own protocol policy
 
 ## Thread model
@@ -65,13 +66,15 @@ One live runtime serves one open target.
 
 Use:
 - `exec-idb` for one-shot work
-- `supervisor start-ui` or `supervisor start-idalib` plus `exec` for iterative work
+- local `supervisor start-ui` or `supervisor start-idalib` plus `exec` for iterative work
+- `remote start-idalib` when the bridge and target files are on another host
 
 Ownership and lifecycle are separate:
 - stateless `exec` resets the exec environment for one request and leaves no reusable session behind
 - stateful `exec` and `reset` act on exec-environment ownership
 - `save` persists work through an exec request; it can be stateless or use an existing stateful session
 - `quit` is a lifecycle action and bypasses session ownership
+- `remote stop` is bridge-host-only, does not save, and accepts only connected or bridge-managed idalib processes
 
 ## Runtime notes
 
@@ -82,8 +85,9 @@ Ownership and lifecycle are separate:
 
 ## Security model
 
-Local and trusted use only.
+Trusted use only, including when carried through a TCP tunnel.
 
 - no authentication
 - code execution inside IDA
+- remote lifecycle can launch idalib and terminate validated idalib PIDs on the bridge host
 - do not expose the bridge to untrusted networks

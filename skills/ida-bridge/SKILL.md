@@ -14,8 +14,16 @@ Multiple IDA instances can connect to the bridge, but you target a specific inst
 
 ## Operating model
 
+### Choose lifecycle locality
+- Use `ida-bridge supervisor ...` only when the IDA process and its files are on the same host as the CLI.
+- When the bridge server is on another host and the IDBs/binaries/idapro environment are local to that bridge host, use `ida-bridge remote start-idalib` and `ida-bridge remote stop`. The remote lifecycle is headless-only; it cannot create UI IDA.
+- Remote paths, including `--python`, are bridge-host paths. Do not test or rewrite them against the CLI host filesystem.
+- Configure `IDA_BRIDGE_HOST` / `IDA_BRIDGE_PORT` for the remote socket or its TCP tunnel before running `remote`, `list`, `exec`, or `save` commands.
+- Read `references/remote-lifecycle.md` before operating a remote bridge lifecycle.
+
 ### Routing rule
-- Single action on an IDB: `ida-bridge exec-idb --idb /path/to.i64 ...` (one-shot: starts idalib, executes, stops).
+- Single action on a local IDB: `ida-bridge exec-idb --idb /path/to.i64 ...` (one-shot: starts idalib, executes, stops).
+- Single action on a remote bridge-host IDB: there is no remote `exec-idb`; run `remote start-idalib`, `exec`, then `remote stop`.
 - Multiple actions or iterative exploration: launch a persistent IDA instance. Do not loop `exec-idb` against the same IDB; that repays startup/teardown every call.
 
 ### One-shot
@@ -26,17 +34,19 @@ Multiple IDA instances can connect to the bridge, but you target a specific inst
 - Reuse before starting: `ida-bridge list` shows running instances by `client_id`. If your target IDB is already open, target that `client_id` instead of starting another -- opening the same IDB twice fails on the IDB lock.
 - Start a new UI IDA: `ida-bridge supervisor start-ui --idb /path/to.i64`
 - Start a new idalib (headless): `ida-bridge supervisor start-idalib --idb /path/to.i64`
-- Both start commands wait until the IDA instance connects to the bridge.
+- Start idalib on a remote bridge host: `ida-bridge remote start-idalib --idb /bridge/path/to.i64`
+- All start commands wait until the IDA instance connects to the bridge.
 - On connection, they print instance info: `client_id`, `idb_path`, `pid`, `log`. No need to sleep or list afterwards -- read `client_id` from the output and continue.
 - UI IDA connects as soon as the IDB is open but continues auto-analysis. For new IDBs, if results look incomplete, run `import ida_auto; ida_auto.auto_wait()` in exec.
 - idalib waits for auto-analysis to finish before connecting -- it is ready to query on arrival. For malformed input that hangs analysis, skip it with the `--skip-initial-auto-analysis` flag; expect a mostly unexplored IDB.
-- CLI waits up to 300s for the first client connection. Override with `--wait-s` for large binaries. If the wait expires (`status: waiting`, no `client_id`), analysis is still running -- find the instance with `ida-bridge list` once it connects instead of restarting.
+- Headless start commands wait up to 300s for the first client connection. Override with `--wait-s` for large binaries. If the wait expires (`status: waiting`, no `client_id`), analysis is still running -- find the instance with `ida-bridge list` once it connects instead of restarting.
 
 ### Lifecycle
-- Stop: `ida-bridge supervisor stop <client_id>` (no session-id needed; does not auto-save).
+- Stop a local instance: `ida-bridge supervisor stop <client_id>` (no session-id needed; does not auto-save).
+- Stop bridge-host idalib remotely: `ida-bridge remote stop <client_id-or-pid>` (does not auto-save). Never use local `supervisor stop` for a remote PID.
 - Save stateless: `ida-bridge supervisor save <client_id>`.
 - Save through an existing stateful session: `ida-bridge supervisor save <client_id> --stateful --session-id <sid>`.
-- Diagnose a launch that fails to connect: open the log file at the path printed in the error message.
+- Diagnose a launch that fails to connect: open the log file at the path printed in the error message (on the bridge host for a remote launch).
 
 ## Execution
 
@@ -65,7 +75,7 @@ Both `exec` and `exec-idb` accept these execution inputs:
 - `_result_` is the per-call return channel. If set, it is popped after the call, serialized, and returned to the CLI; it does not persist. Keep it flat -- serialization truncates at depth 4.
 - `--sql` alone returns the SQL result under `--- result ---`; address columns are rendered as hex strings.
 - `--sql` with `-f`/`-c` initializes `_result_` as a plain dict (`columns`, `rows`) with address values as raw ints so Python can compute with them. Later `-f`/`-c` code may replace `_result_`.
-- Never call `qexit()` from exec code -- it can kill IDA before the bridge replies. Use `supervisor stop` for lifecycle; if you must exit from within exec, use `idb.quit()`.
+- Never call `qexit()` from exec code -- it can kill IDA before the bridge replies. Use the locality-appropriate `supervisor stop` or `remote stop`; if you must exit from within exec, use `idb.quit()`.
 
 ### Stateless vs stateful
 
@@ -96,7 +106,7 @@ Shared instance means shared IDB: co-tenants edit the same database, so another 
 - Default timeout is 60s (`--timeout-s`); raise it only for known-heavy ops, and use `--timeout-s 0` only to wait indefinitely.
 - On timeout, do not blindly retry the same command:
   - Confirm the instance still exists: `ida-bridge list`.
-  - If the code is likely hung (unbounded loop/scan), stop immediately: `ida-bridge supervisor stop <client_id>` (then restart and fix the script).
+  - If the code is likely hung (unbounded loop/scan), stop immediately with the locality-appropriate command: local `ida-bridge supervisor stop <client_id>` or bridge-host `ida-bridge remote stop <client_id>` (then restart and fix the script).
   - If the code is likely just slow, probe sequentially (do not spam; probes queue): `ida-bridge exec <client_id> --timeout-s 30 -c '_result_=1'` up to 3 times. If probes keep timing out past your budget, stop and restart.
 
 ### CLI output
@@ -108,7 +118,7 @@ Shared instance means shared IDB: co-tenants edit the same database, so another 
 
 ### Headless input options
 
-For headless `--input` flows (`exec-idb` or `supervisor start-idalib`), some input formats need selector flags. Existing `--idb` flows do not.
+For headless `--input` flows (`exec-idb`, `supervisor start-idalib`, or `remote start-idalib`), some input formats need selector flags. Existing `--idb` flows do not.
 
 - Fat Mach-O: pass `--arch <slice>`. Use `lipo -archs <bin>` to list slices; choose the requested/target architecture, ask if unclear.
 - DYLD cache single-module: pass `--dyld-module <image-path-inside-cache>` with the cache as `--input`, e.g. `/System/Library/Frameworks/Foundation.framework/Foundation`.

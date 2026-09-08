@@ -62,6 +62,8 @@ def serve_bridge() -> ServeBridge:
         ping_interval: float | None = None,
         ping_timeout: float | None = None,
         stateful_ttl_s: float | None = None,
+        lifecycle_quit_timeout_s: float = 10.0,
+        lifecycle_exit_timeout_s: float = 20.0,
     ) -> AsyncIterator[tuple[BridgeServer, str]]:
         server = BridgeServer(
             bridge_client_id=bridge_client_id,
@@ -69,6 +71,8 @@ def serve_bridge() -> ServeBridge:
             timeout_tick_s=timeout_tick_s,
             instance_id=instance_id,
             stateful_ttl_s=stateful_ttl_s,
+            lifecycle_quit_timeout_s=lifecycle_quit_timeout_s,
+            lifecycle_exit_timeout_s=lifecycle_exit_timeout_s,
         )
         server.start_background_tasks()
         ws_kwargs: dict = {}

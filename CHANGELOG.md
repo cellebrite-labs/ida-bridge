@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+- Added `ida-bridge remote start-idalib` and `ida-bridge remote stop` for managing headless idalib processes on the bridge server's host. Remote launches support existing IDBs, binary-to-IDB creation, loader selectors, bridge-host Python selection, readiness waits, and JSON output.
+- Added bridge-owned child tracking, reaping, graceful quit correlation, and validated bridge-host PID escalation. Remote lifecycle never starts UI IDA and never saves on stop.
+
+### Changed
+- Bumped the websocket protocol to version 5 with strict `start_idalib` and `stop_idalib` request/response models.
+
 ## [0.6.0] - 2026-09-03
 
 ### Added
