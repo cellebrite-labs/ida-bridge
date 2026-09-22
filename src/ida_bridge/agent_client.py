@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Sequence
 import contextlib
 from dataclasses import dataclass
 from typing import Any, NoReturn
@@ -47,6 +48,7 @@ class AgentClient:
 
         self._bridge_id: str | None = None
         self._bridge_meta: dict[str, Any] | None = None
+        self._frame_limit_bytes: int | None = None
         self._conn: _ConnState | None = None
 
         self._pending: dict[str, asyncio.Future[protocol.Message]] = {}
@@ -75,7 +77,7 @@ class AgentClient:
         if self._conn is not None:
             raise RuntimeError("already connected")
 
-        ws = await websockets.connect(self._url, max_size=protocol.ws_max_size())
+        ws = await websockets.connect(self._url, max_size=None)
 
         try:
             # Handshake: hello must be first, and we expect hello_ack next.
@@ -110,6 +112,7 @@ class AgentClient:
 
             self._bridge_id = msg.bridge_id
             self._bridge_meta = msg.meta
+            self._frame_limit_bytes = msg.max_size
 
             listener = asyncio.create_task(
                 self._listen(ws),
@@ -246,6 +249,25 @@ class AgentClient:
 
         return resp
 
+    async def remote(self, argv: Sequence[str]) -> protocol.RemoteResponse:
+        req = protocol.RemoteRequest(
+            id=protocol.new_req_id(),
+            src=self._client_id,
+            dst=self.bridge_id,
+            argv=list(argv),
+        )
+        resp = await self._request(req)
+        if not isinstance(resp, protocol.RemoteResponse):
+            await self._protocol_violation(
+                f"expected remote_response, got: {getattr(resp, 'type', type(resp).__name__)}"
+            )
+        return resp
+
+    def _frame_limit(self) -> int:
+        if self._frame_limit_bytes is not None:
+            return self._frame_limit_bytes
+        return protocol.ws_max_size()
+
     async def _protocol_violation(
         self,
         detail: str,
@@ -261,6 +283,13 @@ class AgentClient:
         if conn is None:
             raise RuntimeError("not connected")
 
+        data = protocol.dump_message_json(req)
+        limit = self._frame_limit()
+        if len(data) > limit:
+            raise BridgeDisconnected(
+                f"request is {len(data)} bytes; server frame limit is {limit} bytes. Shrink the request."
+            )
+
         fut: asyncio.Future[protocol.Message] = asyncio.get_running_loop().create_future()
 
         async with self._lock:
@@ -269,7 +298,7 @@ class AgentClient:
 
             self._pending[req.id] = fut
             try:
-                await conn.ws.send(protocol.dump_message_json(req))
+                await conn.ws.send(data)
             except Exception as exc:
                 self._pending.pop(req.id, None)
                 fut.set_exception(exc)

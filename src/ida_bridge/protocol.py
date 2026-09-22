@@ -28,7 +28,7 @@ from pydantic_core import PydanticCustomError
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_URL = f"ws://{DEFAULT_HOST}:{DEFAULT_PORT}"
-PROTO_VERSION = 4
+PROTO_VERSION = 5
 
 # WebSocket close codes
 WS_CLOSE_PROTOCOL_ERROR = 1002
@@ -57,6 +57,9 @@ MSG_RESET_RESPONSE = "reset_response"
 MSG_QUIT = "quit"
 MSG_QUIT_RESPONSE = "quit_response"
 
+MSG_REMOTE = "remote"
+MSG_REMOTE_RESPONSE = "remote_response"
+
 MessageType = Literal[
     MSG_ERROR,
     MSG_HELLO,
@@ -69,6 +72,8 @@ MessageType = Literal[
     MSG_RESET_RESPONSE,
     MSG_QUIT,
     MSG_QUIT_RESPONSE,
+    MSG_REMOTE,
+    MSG_REMOTE_RESPONSE,
 ]
 
 # List filters
@@ -105,6 +110,8 @@ ERR_TIMEOUT = "TIMEOUT"
 ERR_QUEUE_FULL = "QUEUE_FULL"
 ERR_RESPONSE_NOT_SERIALIZABLE = "RESPONSE_NOT_SERIALIZABLE"
 ERR_RESPONSE_TOO_LARGE = "RESPONSE_TOO_LARGE"
+ERR_REMOTE_DENIED = "REMOTE_DENIED"
+ERR_REMOTE_FAILED = "REMOTE_FAILED"
 ERR_TARGET_INTERNAL_ERROR = "TARGET_INTERNAL_ERROR"
 ERR_INVALID_TARGET_ROLE = "INVALID_TARGET_ROLE"
 ERR_SESSION_CONFLICT = "SESSION_CONFLICT"
@@ -197,6 +204,7 @@ class HelloAck(BaseMessage):
 
     client_id: ClientId
     bridge_id: ClientId
+    max_size: int = Field(gt=0)
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -406,6 +414,32 @@ class QuitResponse(ResponseBase):
     type: Literal[MSG_QUIT_RESPONSE] = MSG_QUIT_RESPONSE
 
 
+# -----------------
+# remote
+# -----------------
+
+
+class RemoteRequest(RequestBase):
+    type: Literal[MSG_REMOTE] = MSG_REMOTE
+
+    argv: list[str]
+
+
+class RemoteResponse(ResponseBase):
+    type: Literal[MSG_REMOTE_RESPONSE] = MSG_REMOTE_RESPONSE
+
+    exit_code: int | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_remote_fields(self):
+        self._enforce_ok("exit_code", require_when_ok=True)
+        self._enforce_ok("stdout", require_when_ok=True)
+        self._enforce_ok("stderr", require_when_ok=True)
+        return self
+
+
 Message = Annotated[
     Hello
     | HelloAck
@@ -417,6 +451,8 @@ Message = Annotated[
     | ResetResponse
     | QuitRequest
     | QuitResponse
+    | RemoteRequest
+    | RemoteResponse
     | ProtocolError,
     Field(discriminator="type"),
 ]
@@ -438,6 +474,7 @@ _RESPONSE_FOR_REQUEST: dict[str, type[Message]] = {
     MSG_EXEC: ExecResponse,
     MSG_RESET: ResetResponse,
     MSG_QUIT: QuitResponse,
+    MSG_REMOTE: RemoteResponse,
 }
 
 

@@ -26,7 +26,12 @@ async def _serve_handshake(*, port: int, close_after_ack: bool) -> None:
         msg = protocol.parse_message_json(raw)
         assert isinstance(msg, protocol.Hello)
 
-        ack = protocol.HelloAck(client_id=msg.client_id, bridge_id="bridge", meta={"server": "test"})
+        ack = protocol.HelloAck(
+            client_id=msg.client_id,
+            bridge_id="bridge",
+            max_size=protocol.ws_max_size(),
+            meta={"server": "test"},
+        )
         await ws.send(protocol.dump_message_json(ack))
 
         if close_after_ack:

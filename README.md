@@ -301,6 +301,7 @@ The CLI gives agents control over connected instances:
 - `ida-bridge exec` -- execute IDAPython or SQL on a specific IDA instance
 - `ida-bridge supervisor start-idalib` / `start-ui` -- launch new IDA instances
 - `ida-bridge supervisor stop` / `save` -- stop or save IDA instances
+- `ida-bridge remote -- <command>` -- run a host CLI command through the bridge. Paths are host paths. Use this when the caller cannot see the host's files (a sandbox mapped to the websocket port, not the filesystem)
 
 This lets an agent discover available targets, run queries or code against them, and manage their lifecycle -- all through CLI.
 
@@ -381,7 +382,7 @@ Headless only (idalib). UI IDA handles dyld module selection through its own GUI
 |----------|---------|-------------|
 | `IDA_BRIDGE_HOST` | `127.0.0.1` | bridge server bind host and client default host |
 | `IDA_BRIDGE_PORT` | `8765` | bridge server bind port and client default port |
-| `IDA_BRIDGE_WS_MAX_SIZE` | `67108864` | max incoming websocket message size in bytes (minimum `16384`) |
+| `IDA_BRIDGE_WS_MAX_SIZE` | `67108864` | server-side inbound websocket frame limit in bytes (minimum `16384`). Advertised as `max_size` on `hello_ack`. Clients use that advertised value for send-side checks and do not apply their own inbound cap. Setting this on a client does not change the limit |
 | `IDA_BRIDGE_LOG_FILE` | `~/Library/Logs/ida-bridge/server.log` (macOS) / `%LOCALAPPDATA%\ida-bridge\logs\server.log` (Windows) / `$XDG_STATE_HOME/ida-bridge/logs/server.log`, default `~/.local/state/...` (Linux) | structured server log (rotated); raw stdout/stderr go to the sibling `server.out` |
 | `IDA_BRIDGE_LOG_MAX_BYTES` | `10485760` | log rotation threshold in bytes |
 | `IDA_BRIDGE_LOG_BACKUP_COUNT` | `3` | number of rotated log files to keep |

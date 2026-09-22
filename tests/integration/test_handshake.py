@@ -31,6 +31,7 @@ async def test_handshake_happy_path(serve_bridge: ServeBridge) -> None:
             assert ida_ack.bridge_id == server.bridge_id
             assert ida_ack.meta["server"] == "ida-bridge"
             assert ida_ack.meta["instance_id"] == "test-instance"
+            assert ida_ack.max_size == server.max_size
 
             await send_msg(agent, protocol.Hello(role=protocol.ROLE_AGENT, client_id="agent-1", meta={}))
             agent_ack = await recv_msg(agent)

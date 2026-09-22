@@ -12,7 +12,7 @@ import websockets
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed
 
-from ida_bridge import logs, protocol
+from ida_bridge import logs, protocol, remote
 
 HOST = protocol.bridge_host()
 PORT = protocol.bridge_port()
@@ -62,6 +62,17 @@ def _configure_logging() -> None:
 log = logging.getLogger("ida-bridge")
 
 WS_MAX_SIZE = protocol.ws_max_size()
+
+
+def _log_remote_dropped(task: asyncio.Task[tuple[int, str, str]]) -> None:
+    if task.cancelled():
+        log.warning("dropping remote response: CLI wait cancelled after requester left")
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.warning("dropping remote response: CLI failed after requester left: %s", exc)
+        return
+    log.warning("dropping remote response: requester gone, CLI finished")
 
 
 class _AbortConnection(Exception):
@@ -137,6 +148,10 @@ class BridgeServer:
     def bridge_id(self) -> str:
         return self._bridge_id
 
+    @property
+    def max_size(self) -> int:
+        return self._max_size
+
     def __init__(
         self,
         *,
@@ -145,6 +160,7 @@ class BridgeServer:
         timeout_tick_s: float = 0.5,
         instance_id: str | None = None,
         stateful_ttl_s: float | None = None,
+        max_size: int | None = None,
     ):
         # Defaults come from env, but tests can override everything via ctor.
         bridge_id = bridge_client_id if bridge_client_id is not None else os.getenv("IDA_BRIDGE_CLIENT_ID", "bridge")
@@ -169,6 +185,9 @@ class BridgeServer:
         self._timeout_tick_s = float(timeout_tick_s)
         self._stateful_ttl_s = float(ttl)
         self._instance_id = instance_id or f"bridge-{os.getpid()}"
+        self._max_size = WS_MAX_SIZE if max_size is None else max_size
+        if self._max_size < protocol.MIN_WS_MAX_SIZE:
+            raise ValueError(f"max_size must be >= {protocol.MIN_WS_MAX_SIZE}")
 
         self._timeout_task: asyncio.Task[None] | None = None
         self._log_prune_task: asyncio.Task[None] | None = None
@@ -588,6 +607,7 @@ class BridgeServer:
         ack = protocol.HelloAck(
             client_id=client_id,
             bridge_id=self._bridge_id,
+            max_size=self._max_size,
             meta={
                 "server": "ida-bridge",
                 "instance_id": self._instance_id,
@@ -621,6 +641,10 @@ class BridgeServer:
 
         if isinstance(msg, protocol.ListRequest):
             await self._handle_list(ws, client_id, msg)
+            return
+
+        if isinstance(msg, protocol.RemoteRequest):
+            await self._handle_remote(ws, client_id, msg)
             return
 
         await self._protocol_error(
@@ -689,6 +713,60 @@ class BridgeServer:
         ok = await self._send_best_effort(ws, payload, context="list")
         if not ok:
             await self._disconnect(agent_id)
+
+    async def _handle_remote(self, ws: ServerConnection, agent_id: str, msg: protocol.RemoteRequest) -> None:
+        reason = remote.denied_reason(msg.argv)
+        if reason is not None:
+            payload = protocol.error_for_request(msg, code=protocol.ERR_REMOTE_DENIED, message=reason)
+            ok = await self._send_best_effort(ws, payload, context="remote_denied")
+            if not ok:
+                log.warning("dropping remote response: socket gone id=%s", msg.id)
+            return
+
+        task = asyncio.create_task(remote.run_argv(msg.argv), name=f"ida-bridge-remote:{msg.id}")
+        try:
+            exit_code, stdout, stderr = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            log.warning(
+                "dropping remote response: requester gone id=%s argv=%s; CLI may still be running",
+                msg.id,
+                msg.argv,
+            )
+            task.add_done_callback(_log_remote_dropped)
+            raise
+        except Exception as exc:
+            log.exception("remote CLI failed")
+            detail = protocol.ascii_escaped(f"{type(exc).__name__}: {exc}", fallback="remote cli failed")
+            payload = protocol.error_for_request(
+                msg,
+                code=protocol.ERR_REMOTE_FAILED,
+                message=f"could not run the host CLI: {detail}. The bridge is still running.",
+            )
+            ok = await self._send_best_effort(ws, payload, context="remote_failed")
+            if not ok:
+                log.warning("dropping remote response: socket gone id=%s", msg.id)
+            return
+
+        payload = protocol.RemoteResponse(
+            id=msg.id,
+            src=self._bridge_id,
+            dst=agent_id,
+            ok=True,
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+        )
+        encoded = protocol.dump_message_json(payload)
+        if len(encoded) > self._max_size:
+            log.error("remote response is %d bytes, over the %d byte frame limit", len(encoded), self._max_size)
+            payload = protocol.error_from_response(
+                payload,
+                code=protocol.ERR_RESPONSE_TOO_LARGE,
+                message=f"serialized response is {len(encoded)} bytes; limit is {self._max_size} bytes.",
+            )
+        ok = await self._send_best_effort(ws, payload, context="remote")
+        if not ok:
+            log.warning("dropping remote response: socket gone id=%s", msg.id)
 
     def _apply_exec_env_policy(self, msg: protocol.ExecRequest | protocol.ResetRequest) -> _ExecEnvPolicy:
         ownership = self._get_ownership(msg.dst)
@@ -1165,7 +1243,7 @@ async def main() -> None:
     # WS thread long enough to miss the default 20s pong deadline.  60s
     # accommodates these bursts while still detecting genuinely dead
     # connections.
-    async with websockets.serve(server.handler, HOST, PORT, max_size=WS_MAX_SIZE, ping_timeout=60):
+    async with websockets.serve(server.handler, HOST, PORT, max_size=server.max_size, ping_timeout=60):
         try:
             await asyncio.Future()
         finally:

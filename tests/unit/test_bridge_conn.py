@@ -350,6 +350,69 @@ def test_oversized_response_keeps_handler_serving(monkeypatch: pytest.MonkeyPatc
     assert parsed_ok.result == 1
 
 
+def test_hello_ack_stores_advertised_max_size() -> None:
+    conn, ws = _conn_with_fake_ws()
+    ack = protocol.HelloAck(client_id="ida-1", bridge_id="bridge", max_size=123456)
+    conn._on_message(ws, protocol.dump_message_json(ack))
+    assert conn._advertised_max_size == 123456
+    assert conn._frame_limit() == 123456
+    assert conn._ready.is_set()
+
+
+def test_send_uses_advertised_max_size_not_a_smaller_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    local = protocol.MIN_WS_MAX_SIZE
+    advertised = local * 4
+    monkeypatch.setenv("IDA_BRIDGE_WS_MAX_SIZE", str(local))
+    conn, ws = _conn_with_fake_ws()
+    conn._advertised_max_size = advertised
+    conn._ready.set()
+    msg = protocol.ExecResponse(
+        id=protocol.new_req_id(),
+        src="ida-1",
+        dst="agent-1",
+        ok=True,
+        result="z" * (local + 1024),
+    )
+    original = protocol.dump_message_json(msg)
+    assert local < len(original) <= advertised
+
+    conn.send(msg)
+
+    assert ws.sent == [original]
+    parsed = protocol.parse_message_json(ws.sent[0])
+    assert isinstance(parsed, protocol.ExecResponse)
+    assert parsed.ok is True
+
+
+def test_send_too_large_uses_advertised_limit_not_a_larger_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    local = protocol.MIN_WS_MAX_SIZE * 8
+    advertised = protocol.MIN_WS_MAX_SIZE
+    monkeypatch.setenv("IDA_BRIDGE_WS_MAX_SIZE", str(local))
+    conn, ws = _conn_with_fake_ws()
+    conn._advertised_max_size = advertised
+    conn._ready.set()
+    msg = protocol.ExecResponse(
+        id=protocol.new_req_id(),
+        src="ida-1",
+        dst="agent-1",
+        ok=True,
+        result="z" * (advertised + 1024),
+    )
+    original = protocol.dump_message_json(msg)
+    assert advertised < len(original) <= local
+
+    conn.send(msg)
+
+    parsed = protocol.parse_message_json(ws.sent[0])
+    assert isinstance(parsed, protocol.ExecResponse)
+    assert parsed.ok is False
+    assert parsed.code == protocol.ERR_RESPONSE_TOO_LARGE
+    assert parsed.message is not None
+    assert str(advertised) in parsed.message
+    assert str(local) not in parsed.message
+    assert str(len(original)) in parsed.message
+
+
 def test_send_drops_an_unserializable_handshake(caplog: pytest.LogCaptureFixture) -> None:
     """A hello has no error form -- an IDB path with undecodable bytes can produce one."""
     conn, ws = _conn_with_fake_ws()

@@ -9,6 +9,8 @@ Query and manipulate IDA Pro databases through the installed and configured `ida
 
 The bridge server must be running before IDA starts: `ida-bridge server start`.
 When IDA opens an IDB, whether UI or headless, it connects to the bridge server automatically.
+
+If this process cannot see the host's IDBs or IDA install, do not map the filesystem in. Run the host CLI through the bridge: `ida-bridge remote -- supervisor start-idalib --idb /path/on/host.i64`. Paths are the host's paths. Do not remote `remote` (it recurses) or `server stop` (it would stop the bridge you are using). Stop an IDA instance with `ida-bridge remote -- supervisor stop <client_id>`.
 Each connected IDA instance has one open IDB.
 Multiple IDA instances can connect to the bridge, but you target a specific instance by its `client_id`.
 

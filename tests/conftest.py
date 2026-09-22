@@ -77,7 +77,9 @@ def serve_bridge() -> ServeBridge:
         if ping_timeout is not None:
             ws_kwargs["ping_timeout"] = ping_timeout
         try:
-            async with websockets.serve(server.handler, "127.0.0.1", 0, **ws_kwargs) as ws_server:
+            async with websockets.serve(
+                server.handler, "127.0.0.1", 0, max_size=server.max_size, **ws_kwargs
+            ) as ws_server:
                 port = ws_server.sockets[0].getsockname()[1]
                 url = f"ws://127.0.0.1:{port}"
                 yield server, url

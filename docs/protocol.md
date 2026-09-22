@@ -6,7 +6,7 @@ Defines the websocket protocol between `agent`, `bridge`, and `ida`.
 
 - WebSocket, JSON over text frames
 - default URL: `ws://127.0.0.1:8765`
-- protocol version: `4`
+- protocol version: `5`
 - local and trusted use only
 - no compatibility guarantees for third-party clients
 
@@ -24,8 +24,8 @@ Defines the websocket protocol between `agent`, `bridge`, and `ida`.
 ## Transport
 
 - non-text frames are rejected with `ProtocolError`, then close `1002`
-- oversized inbound frames may be rejected by the websocket server with `1009`; IDA replies that exceed the cap are not sent and the target answers `RESPONSE_TOO_LARGE` instead
-- server max incoming message size defaults to `67108864` bytes and is configured by `IDA_BRIDGE_WS_MAX_SIZE`, which must be at least `16384`: below that an oversize reply's own error response would not fit either
+- oversized inbound frames may be rejected by the websocket server with `1009`; IDA replies and remote CLI responses that exceed the cap are not sent and the caller answers `RESPONSE_TOO_LARGE` instead
+- the server owns the frame limit. `IDA_BRIDGE_WS_MAX_SIZE` is a server-side setting (default `67108864`, minimum `16384`). The server advertises that effective cap as `max_size` on `hello_ack`. Clients use the advertised value for send-side checks. Until the ack, a client falls back to its local `IDA_BRIDGE_WS_MAX_SIZE`. Clients connect with no inbound cap: a frame the server accepted must not be dropped by a smaller local default
 
 ## Roles and client IDs
 
@@ -40,7 +40,7 @@ Clients choose `client_id` during handshake.
 ## Message model
 
 All messages include:
-- `v`: protocol version integer (`4`)
+- `v`: protocol version integer (`5`)
 - `type`: message type string
 
 All requests and responses include:
@@ -70,7 +70,7 @@ The first message from a client must be `hello`.
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "hello",
   "role": "agent",
   "client_id": "agent-1",
@@ -83,14 +83,17 @@ Fields:
 - `client_id`: non-empty string, unique among connected clients
 - `meta`: free-form JSON object
 
+`hello_ack.max_size` is the server's effective inbound frame limit, in bytes. Clients must use it for send-side size checks. A client environment's `IDA_BRIDGE_WS_MAX_SIZE` does not change the cap.
+
 ### `hello_ack`
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "hello_ack",
   "client_id": "agent-1",
   "bridge_id": "bridge",
+  "max_size": 67108864,
   "meta": {
     "server": "ida-bridge",
     "instance_id": "bridge-12345"
@@ -100,12 +103,12 @@ Fields:
 
 ## Allowed routing
 
-- agent -> bridge: `list`
+- agent -> bridge: `list`, `remote`
 - agent -> ida: `exec`, `reset`, `quit`
 - ida -> agent: `exec_response`, `reset_response`, `quit_response`
 - ida -> bridge after handshake: not allowed
-- bridge -> agent: `list_response`
-- bridge -> agent: bridge-originated request failures as `exec_response`, `reset_response`, or `quit_response`
+- bridge -> agent: `list_response`, `remote_response`
+- bridge -> agent: bridge-originated request failures as `exec_response`, `reset_response`, `quit_response`, or `remote_response`
 
 ## Operations
 
@@ -115,7 +118,7 @@ Request:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "list",
   "id": "<uuid-v4>",
   "src": "agent-1",
@@ -131,7 +134,7 @@ Response:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "list_response",
   "id": "<uuid-v4>",
   "src": "bridge",
@@ -155,7 +158,7 @@ Stateless request:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "exec",
   "id": "<uuid-v4>",
   "src": "agent-1",
@@ -169,7 +172,7 @@ Stateful request:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "exec",
   "id": "<uuid-v4>",
   "src": "agent-1",
@@ -191,7 +194,7 @@ Success response:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "exec_response",
   "id": "<uuid-v4>",
   "src": "ida-1",
@@ -213,7 +216,7 @@ Request:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "reset",
   "id": "<uuid-v4>",
   "src": "agent-1",
@@ -242,7 +245,7 @@ Success response:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "reset_response",
   "id": "<uuid-v4>",
   "src": "ida-1",
@@ -259,7 +262,7 @@ Request:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "quit",
   "id": "<uuid-v4>",
   "src": "agent-1",
@@ -271,7 +274,7 @@ Success response:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "quit_response",
   "id": "<uuid-v4>",
   "src": "ida-1",
@@ -279,6 +282,48 @@ Success response:
   "ok": true
 }
 ```
+
+### `remote`
+
+Runs an ida-bridge CLI command on the host where the bridge server is running. One request covers every command: `argv` is the host CLI's argv, not a shell string. Paths in `argv` are host paths.
+
+The server invokes its own install (`sys.executable -m ida_bridge`) and waits. It is not a process supervisor: no child registry, no reaping beyond that wait, and no timeout. `start-idalib` can run for minutes. The proxied CLI may outlive the requesting connection. Disconnect does not kill the child — the CLI detaches idalib, and killing the CLI would not stop that instance. If the requester is gone when the CLI finishes, the response is logged and dropped. Late responses for a request the router already dropped are discarded the same way.
+
+Refused argv (answered `ok: false`, the CLI is not started):
+
+- `remote` — would recurse through this server
+- `server stop` — would stop the bridge this connection is using
+
+Request:
+
+```json
+{
+  "v": 5,
+  "type": "remote",
+  "id": "<uuid-v4>",
+  "src": "agent-1",
+  "dst": "bridge",
+  "argv": ["supervisor", "start-idalib", "--input", "/path/on/host"]
+}
+```
+
+Success response. `exit_code` is the child's code, including non-zero. `stdout` and `stderr` are the child's streams. The local `remote` command prints them through and exits with `exit_code`.
+
+```json
+{
+  "v": 5,
+  "type": "remote_response",
+  "id": "<uuid-v4>",
+  "src": "bridge",
+  "dst": "agent-1",
+  "ok": true,
+  "exit_code": 0,
+  "stdout": "...",
+  "stderr": ""
+}
+```
+
+On failure, `exit_code`, `stdout`, and `stderr` are absent. A response that would exceed `max_size` is replaced with `RESPONSE_TOO_LARGE` and is not sent.
 
 ## Ownership and lifecycle semantics
 
@@ -335,7 +380,7 @@ Example:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "error",
   "code": "INVALID_MESSAGE",
   "message": "invalid message",
@@ -382,7 +427,7 @@ If the source disconnects, the bridge usually drops that source's pending reques
 
 ## Timeouts
 
-The bridge enforces request timeouts for agent -> ida routed requests.
+The bridge enforces request timeouts for agent -> ida routed requests. `remote` is not one of those: the handler waits for the host CLI with no timeout.
 
 - default timeout comes from `IDA_BRIDGE_DEFAULT_TIMEOUT_S` and defaults to `60`
 - requests may override it with `timeout_s`
