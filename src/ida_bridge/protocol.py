@@ -438,11 +438,16 @@ def parse_message_json(raw: str) -> Message:
     return _message_adapter.validate_json(raw, context={"wire": True})
 
 
-_RESPONSE_FOR_REQUEST: dict[str, type[Message]] = {
+_RESPONSE_FOR_REQUEST: dict[str, type[ResponseBase]] = {
+    MSG_LIST: ListResponse,
     MSG_EXEC: ExecResponse,
     MSG_RESET: ResetResponse,
     MSG_QUIT: QuitResponse,
 }
+
+
+def response_type(request_type: str) -> type[ResponseBase]:
+    return _RESPONSE_FOR_REQUEST[request_type]
 
 
 def error_for_request(req: Message, *, code: str, message: str, traceback: str | None = None) -> Message:
@@ -452,11 +457,7 @@ def error_for_request(req: Message, *, code: str, message: str, traceback: str |
     client id. Raises on anything that is not a request, since only requests reach the
     paths that call this; a traceback on a non-exec response is rejected by the model.
     """
-    response_cls = _RESPONSE_FOR_REQUEST.get(req.type)
-    if response_cls is None:
-        err = f"no error response for message type: {req.type}"
-        raise AssertionError(err)
-
+    response_cls = response_type(req.type)
     extra = {"traceback": traceback} if traceback is not None else {}
     return response_cls(id=req.id, src=req.dst, dst=req.src, ok=False, code=code, message=message, **extra)
 

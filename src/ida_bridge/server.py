@@ -108,7 +108,6 @@ class _Pending:
     agent_id: str
     ida_id: str
     req_type: str
-    resp_type: str
     deadline: float | None
     timeout_s: int | None
     takeover: _TakeoverPending | None = None
@@ -885,12 +884,6 @@ class BridgeServer:
 
         msg = policy.msg
 
-        expected_resp_type_by_req: dict[str, str] = {
-            protocol.MSG_EXEC: protocol.MSG_EXEC_RESPONSE,
-            protocol.MSG_RESET: protocol.MSG_RESET_RESPONSE,
-        }
-        expected_resp_type = expected_resp_type_by_req[msg.type]
-
         timeout_s = self._default_timeout_s if msg.timeout_s is None else msg.timeout_s
         if timeout_s == 0:
             deadline = None
@@ -909,7 +902,6 @@ class BridgeServer:
             agent_id=agent_id,
             ida_id=msg.dst,
             req_type=msg.type,
-            resp_type=expected_resp_type,
             deadline=deadline,
             timeout_s=timeout_s,
             takeover=policy.takeover,
@@ -1004,7 +996,6 @@ class BridgeServer:
             agent_id=agent_id,
             ida_id=msg.dst,
             req_type=msg.type,
-            resp_type=protocol.MSG_QUIT_RESPONSE,
             deadline=deadline,
             timeout_s=timeout_s,
         )
@@ -1048,7 +1039,8 @@ class BridgeServer:
             return
 
         # Strict correlation.
-        if pending.ida_id != ida_id or pending.agent_id != msg.dst or pending.resp_type != msg.type:
+        expected_cls = protocol.response_type(pending.req_type)
+        if pending.ida_id != ida_id or pending.agent_id != msg.dst or not isinstance(msg, expected_cls):
             if pending.takeover is not None:
                 self._lock_takeover_unknown(pending.ida_id, pending.takeover)
             elif pending.release is not None:
@@ -1062,7 +1054,7 @@ class BridgeServer:
                     "expected": {
                         "ida_id": pending.ida_id,
                         "agent_id": pending.agent_id,
-                        "response_type": pending.resp_type,
+                        "response_type": expected_cls.model_fields["type"].default,
                     },
                     "got": {
                         "ida_id": ida_id,
@@ -1107,25 +1099,9 @@ class BridgeServer:
         code: str,
         message: str | None = None,
         trace: dict[str, Any] | None = None,
-    ) -> protocol.Message:
-        if req_type == protocol.MSG_EXEC:
-            return protocol.ExecResponse(
-                id=req_id, src=self._bridge_id, dst=dst, ok=False, code=code, message=message, trace=trace, result=None
-            )
-        if req_type == protocol.MSG_RESET:
-            return protocol.ResetResponse(
-                id=req_id, src=self._bridge_id, dst=dst, ok=False, code=code, message=message, trace=trace
-            )
-        if req_type == protocol.MSG_QUIT:
-            return protocol.QuitResponse(
-                id=req_id, src=self._bridge_id, dst=dst, ok=False, code=code, message=message, trace=trace
-            )
-        # Should not happen: callers pass only known request types.
-        return protocol.ProtocolError(
-            code=protocol.ERR_INVALID_MESSAGE,
-            message="unsupported request type",
-            trace={"type": req_type, "id": req_id},
-        )
+    ) -> protocol.ResponseBase:
+        response_cls = protocol.response_type(req_type)
+        return response_cls(id=req_id, src=self._bridge_id, dst=dst, ok=False, code=code, message=message, trace=trace)
 
     async def _send_best_effort(
         self,
