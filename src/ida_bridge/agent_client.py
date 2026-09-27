@@ -271,9 +271,8 @@ class AgentClient:
             self._pending[req.id] = fut
             try:
                 await conn.ws.send(data)
-            except Exception as exc:
+            except Exception:
                 self._pending.pop(req.id, None)
-                fut.set_exception(exc)
                 raise
 
         try:
