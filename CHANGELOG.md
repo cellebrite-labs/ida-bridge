@@ -3,10 +3,11 @@
 ## [Unreleased]
 
 ### Added
-- The handshake ack advertises the server's websocket frame limit. Clients use it for send-side checks and connect with no inbound cap. `IDA_BRIDGE_WS_MAX_SIZE` is a server-side setting ([#11](https://github.com/cellebrite-labs/ida-bridge/issues/11)).
+- The server handshake ack advertises the server's websocket message limit. Clients use it for send-side checks ([#11](https://github.com/cellebrite-labs/ida-bridge/issues/11)).
 
 ### Changed
-- Protocol version is 5.
+- Protocol version bumped to 5.
+- `IDA_BRIDGE_WS_MAX_SIZE` is renamed `IDA_BRIDGE_MAX_MESSAGE_BYTES` and applies to the server only.
 
 ### Fixed
 - Unserializable IDA responses and unexpected request-handler exceptions no longer take down the target. They reply `RESPONSE_NOT_SERIALIZABLE` / `TARGET_INTERNAL_ERROR` and keep serving ([#8](https://github.com/cellebrite-labs/ida-bridge/issues/8)).

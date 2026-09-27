@@ -24,16 +24,11 @@ class BridgeDisconnected(RuntimeError):
 class _ConnState:
     ws: Any
     listener: asyncio.Task[None]
+    max_message_bytes: int
 
 
 class AgentClient:
-    """Agent-side client for the ida-bridge protocol.
-
-    Fail-fast design:
-    - If the websocket closes, pending requests fail.
-    - Invalid inbound messages are treated as protocol errors.
-
-    """
+    """Agent side attachment to bridge server."""
 
     _MAX_ABANDONED_IDS = 32
 
@@ -47,7 +42,6 @@ class AgentClient:
 
         self._bridge_id: str | None = None
         self._bridge_meta: dict[str, Any] | None = None
-        self._frame_limit_bytes: int | None = None
         self._conn: _ConnState | None = None
 
         self._pending: dict[str, asyncio.Future[protocol.Message]] = {}
@@ -111,13 +105,12 @@ class AgentClient:
 
             self._bridge_id = msg.bridge_id
             self._bridge_meta = msg.meta
-            self._frame_limit_bytes = msg.max_size
 
             listener = asyncio.create_task(
                 self._listen(ws),
                 name=f"ida-bridge-agent-listen:{self._client_id}",
             )
-            self._conn = _ConnState(ws=ws, listener=listener)
+            self._conn = _ConnState(ws=ws, listener=listener, max_message_bytes=msg.max_message_bytes)
             return None
 
         except Exception:
@@ -248,11 +241,6 @@ class AgentClient:
 
         return resp
 
-    def _frame_limit(self) -> int:
-        if self._frame_limit_bytes is not None:
-            return self._frame_limit_bytes
-        return protocol.ws_max_size()
-
     async def _protocol_violation(
         self,
         detail: str,
@@ -269,10 +257,9 @@ class AgentClient:
             raise RuntimeError("not connected")
 
         data = protocol.dump_message_json(req)
-        limit = self._frame_limit()
-        if len(data) > limit:
+        if len(data) > conn.max_message_bytes:
             raise BridgeDisconnected(
-                f"request is {len(data)} bytes; server frame limit is {limit} bytes. Shrink the request."
+                f"request is {len(data)} bytes; server message limit is {conn.max_message_bytes} bytes. Shrink the request."
             )
 
         fut: asyncio.Future[protocol.Message] = asyncio.get_running_loop().create_future()

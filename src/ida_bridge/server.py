@@ -16,6 +16,7 @@ from ida_bridge import logs, protocol
 
 HOST = protocol.bridge_host()
 PORT = protocol.bridge_port()
+DEFAULT_MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 
 _DEFAULT_SERVER_LOG_MAX_BYTES = 10 * 1024 * 1024
 _DEFAULT_SERVER_LOG_BACKUP_COUNT = 3
@@ -60,8 +61,6 @@ def _configure_logging() -> None:
 
 
 log = logging.getLogger("ida-bridge")
-
-WS_MAX_SIZE = protocol.ws_max_size()
 
 
 class _AbortConnection(Exception):
@@ -138,8 +137,8 @@ class BridgeServer:
         return self._bridge_id
 
     @property
-    def max_size(self) -> int:
-        return self._max_size
+    def max_message_bytes(self) -> int:
+        return self._max_message_bytes
 
     def __init__(
         self,
@@ -149,9 +148,9 @@ class BridgeServer:
         timeout_tick_s: float = 0.5,
         instance_id: str | None = None,
         stateful_ttl_s: float | None = None,
-        max_size: int | None = None,
+        max_message_bytes: int = DEFAULT_MAX_MESSAGE_BYTES,
     ):
-        # Defaults come from env, but tests can override everything via ctor.
+        # Most defaults come from env (main() reads the message limit); tests override via ctor.
         bridge_id = bridge_client_id if bridge_client_id is not None else os.getenv("IDA_BRIDGE_CLIENT_ID", "bridge")
         if not bridge_id:
             raise ValueError("bridge_client_id must be a non-empty string")
@@ -174,9 +173,11 @@ class BridgeServer:
         self._timeout_tick_s = float(timeout_tick_s)
         self._stateful_ttl_s = float(ttl)
         self._instance_id = instance_id or f"bridge-{os.getpid()}"
-        self._max_size = WS_MAX_SIZE if max_size is None else max_size
-        if self._max_size < protocol.MIN_WS_MAX_SIZE:
-            raise ValueError(f"max_size must be >= {protocol.MIN_WS_MAX_SIZE}")
+        if max_message_bytes < protocol.MIN_MESSAGE_BYTES:
+            raise ValueError(
+                f"max_message_bytes must be >= {protocol.MIN_MESSAGE_BYTES} (IDA_BRIDGE_MAX_MESSAGE_BYTES)"
+            )
+        self._max_message_bytes = max_message_bytes
 
         self._timeout_task: asyncio.Task[None] | None = None
         self._log_prune_task: asyncio.Task[None] | None = None
@@ -255,6 +256,9 @@ class BridgeServer:
     def _restore_release_owner(self, ida_id: str, release: _ReleasePending) -> None:
         if self._ownership_by_ida.get(ida_id) == release:
             self._ownership_by_ida[ida_id] = self._owned(release.session_id)
+
+    def serve(self, host: str, port: int, **ws_kwargs: Any) -> websockets.asyncio.server.serve:
+        return websockets.serve(self.handler, host, port, max_size=self._max_message_bytes, **ws_kwargs)
 
     def start_background_tasks(self) -> None:
         """Start long-running background tasks.
@@ -596,7 +600,7 @@ class BridgeServer:
         ack = protocol.HelloAck(
             client_id=client_id,
             bridge_id=self._bridge_id,
-            max_size=self._max_size,
+            max_message_bytes=self._max_message_bytes,
             meta={
                 "server": "ida-bridge",
                 "instance_id": self._instance_id,
@@ -1165,7 +1169,8 @@ class BridgeServer:
 async def main() -> None:
     _configure_logging()
 
-    server = BridgeServer()
+    max_message_bytes = int(os.getenv("IDA_BRIDGE_MAX_MESSAGE_BYTES", DEFAULT_MAX_MESSAGE_BYTES))
+    server = BridgeServer(max_message_bytes=max_message_bytes)
     server.start_background_tasks()
 
     log.info("Starting server on %s", protocol.bridge_url())
@@ -1174,7 +1179,7 @@ async def main() -> None:
     # WS thread long enough to miss the default 20s pong deadline.  60s
     # accommodates these bursts while still detecting genuinely dead
     # connections.
-    async with websockets.serve(server.handler, HOST, PORT, max_size=server.max_size, ping_timeout=60):
+    async with server.serve(HOST, PORT, ping_timeout=60):
         try:
             await asyncio.Future()
         finally:

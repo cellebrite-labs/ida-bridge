@@ -17,22 +17,24 @@ def _direct_run_code(
 
 
 class _FakeWS:
-    def __init__(self, *, max_size: int | None = None) -> None:
+    def __init__(self, *, max_message_bytes: int) -> None:
         self.sent: list[str] = []
-        self.max_size = max_size
+        self.max_message_bytes = max_message_bytes
         self.closed = False
 
     def send(self, data: str) -> None:
-        if self.max_size is not None and len(data) > self.max_size:
+        if len(data) > self.max_message_bytes:
             self.closed = True
             raise OSError("message too big")
         self.sent.append(data)
 
 
-def _conn_with_fake_ws(*, max_size: int | None = None) -> tuple[BridgeConn, _FakeWS]:
+def _conn_with_fake_ws(*, max_message_bytes: int = protocol.MIN_MESSAGE_BYTES) -> tuple[BridgeConn, _FakeWS]:
+    """A connection whose fake server enforces max_message_bytes and has advertised it."""
     conn = BridgeConn(client_id="ida-1", url="ws://127.0.0.1:9", meta={})
-    ws = _FakeWS(max_size=max_size)
+    ws = _FakeWS(max_message_bytes=max_message_bytes)
     conn._ws = ws  # type: ignore[assignment]
+    conn._max_message_bytes = max_message_bytes
     return conn, ws
 
 
@@ -231,10 +233,9 @@ def test_send_replaces_an_error_response_that_is_itself_unserializable(caplog: p
     assert [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
-def test_send_oversized_response_replies_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    limit = protocol.MIN_WS_MAX_SIZE
-    monkeypatch.setenv("IDA_BRIDGE_WS_MAX_SIZE", str(limit))
-    conn, ws = _conn_with_fake_ws(max_size=limit)
+def test_send_oversized_response_replies_error() -> None:
+    limit = protocol.MIN_MESSAGE_BYTES
+    conn, ws = _conn_with_fake_ws(max_message_bytes=limit)
     conn._ready.set()
     req_id = protocol.new_req_id()
     huge = protocol.ExecResponse(
@@ -242,7 +243,7 @@ def test_send_oversized_response_replies_error(monkeypatch: pytest.MonkeyPatch) 
         src="ida-1",
         dst="agent-1",
         ok=True,
-        result="z" * (protocol.MIN_WS_MAX_SIZE * 2),
+        result="z" * (protocol.MIN_MESSAGE_BYTES * 2),
     )
     original = protocol.dump_message_json(huge)
     assert len(original) > limit
@@ -269,12 +270,11 @@ def test_send_oversized_response_replies_error(monkeypatch: pytest.MonkeyPatch) 
     ws.sent[0].encode("ascii")
 
 
-def test_send_oversized_covers_stdout_stderr_result_together(monkeypatch: pytest.MonkeyPatch) -> None:
-    limit = protocol.MIN_WS_MAX_SIZE
-    monkeypatch.setenv("IDA_BRIDGE_WS_MAX_SIZE", str(limit))
-    conn, ws = _conn_with_fake_ws(max_size=limit)
+def test_send_oversized_covers_stdout_stderr_result_together() -> None:
+    limit = protocol.MIN_MESSAGE_BYTES
+    conn, ws = _conn_with_fake_ws(max_message_bytes=limit)
     conn._ready.set()
-    chunk = "z" * (protocol.MIN_WS_MAX_SIZE // 2)
+    chunk = "z" * (protocol.MIN_MESSAGE_BYTES // 2)
     combined = protocol.ExecResponse(
         id=protocol.new_req_id(),
         src="ida-1",
@@ -303,10 +303,9 @@ def test_send_oversized_covers_stdout_stderr_result_together(monkeypatch: pytest
     assert str(len(original)) in parsed.message
 
 
-def test_oversized_response_keeps_handler_serving(monkeypatch: pytest.MonkeyPatch) -> None:
-    limit = protocol.MIN_WS_MAX_SIZE
-    monkeypatch.setenv("IDA_BRIDGE_WS_MAX_SIZE", str(limit))
-    conn, ws = _conn_with_fake_ws(max_size=limit)
+def test_oversized_response_keeps_handler_serving() -> None:
+    limit = protocol.MIN_MESSAGE_BYTES
+    conn, ws = _conn_with_fake_ws(max_message_bytes=limit)
     conn._ready.set()
     handler = RequestHandler(client_id="ida-1", run_code=_direct_run_code, send=conn.send)
 
@@ -314,7 +313,7 @@ def test_oversized_response_keeps_handler_serving(monkeypatch: pytest.MonkeyPatc
         id=protocol.new_req_id(),
         src="agent-1",
         dst="ida-1",
-        code=f"_result_ = 'z' * {protocol.MIN_WS_MAX_SIZE * 2}",
+        code=f"_result_ = 'z' * {protocol.MIN_MESSAGE_BYTES * 2}",
     )
     handler.handle(huge_req)
 
@@ -350,67 +349,17 @@ def test_oversized_response_keeps_handler_serving(monkeypatch: pytest.MonkeyPatc
     assert parsed_ok.result == 1
 
 
-def test_hello_ack_stores_advertised_max_size() -> None:
+def test_hello_ack_sets_the_limit_and_disconnect_resets_it() -> None:
     conn, ws = _conn_with_fake_ws()
-    ack = protocol.HelloAck(client_id="ida-1", bridge_id="bridge", max_size=123456)
+    advertised = protocol.MIN_MESSAGE_BYTES * 8
+    ack = protocol.HelloAck(client_id="ida-1", bridge_id="bridge", max_message_bytes=advertised)
+
     conn._on_message(ws, protocol.dump_message_json(ack))
-    assert conn._advertised_max_size == 123456
-    assert conn._frame_limit() == 123456
     assert conn._ready.is_set()
+    assert conn._max_message_bytes == advertised
 
-
-def test_send_uses_advertised_max_size_not_a_smaller_local(monkeypatch: pytest.MonkeyPatch) -> None:
-    local = protocol.MIN_WS_MAX_SIZE
-    advertised = local * 4
-    monkeypatch.setenv("IDA_BRIDGE_WS_MAX_SIZE", str(local))
-    conn, ws = _conn_with_fake_ws()
-    conn._advertised_max_size = advertised
-    conn._ready.set()
-    msg = protocol.ExecResponse(
-        id=protocol.new_req_id(),
-        src="ida-1",
-        dst="agent-1",
-        ok=True,
-        result="z" * (local + 1024),
-    )
-    original = protocol.dump_message_json(msg)
-    assert local < len(original) <= advertised
-
-    conn.send(msg)
-
-    assert ws.sent == [original]
-    parsed = protocol.parse_message_json(ws.sent[0])
-    assert isinstance(parsed, protocol.ExecResponse)
-    assert parsed.ok is True
-
-
-def test_send_too_large_uses_advertised_limit_not_a_larger_local(monkeypatch: pytest.MonkeyPatch) -> None:
-    local = protocol.MIN_WS_MAX_SIZE * 8
-    advertised = protocol.MIN_WS_MAX_SIZE
-    monkeypatch.setenv("IDA_BRIDGE_WS_MAX_SIZE", str(local))
-    conn, ws = _conn_with_fake_ws()
-    conn._advertised_max_size = advertised
-    conn._ready.set()
-    msg = protocol.ExecResponse(
-        id=protocol.new_req_id(),
-        src="ida-1",
-        dst="agent-1",
-        ok=True,
-        result="z" * (advertised + 1024),
-    )
-    original = protocol.dump_message_json(msg)
-    assert advertised < len(original) <= local
-
-    conn.send(msg)
-
-    parsed = protocol.parse_message_json(ws.sent[0])
-    assert isinstance(parsed, protocol.ExecResponse)
-    assert parsed.ok is False
-    assert parsed.code == protocol.ERR_RESPONSE_TOO_LARGE
-    assert parsed.message is not None
-    assert str(advertised) in parsed.message
-    assert str(local) not in parsed.message
-    assert str(len(original)) in parsed.message
+    conn._mark_disconnected()
+    assert conn._max_message_bytes == protocol.MIN_MESSAGE_BYTES
 
 
 def test_send_drops_an_unserializable_handshake(caplog: pytest.LogCaptureFixture) -> None:

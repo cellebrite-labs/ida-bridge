@@ -30,6 +30,9 @@ DEFAULT_PORT = 8765
 DEFAULT_URL = f"ws://{DEFAULT_HOST}:{DEFAULT_PORT}"
 PROTO_VERSION = 5
 
+# Every server accepts messages at least this large, so our error responses always fit.
+MIN_MESSAGE_BYTES = 16 * 1024
+
 # WebSocket close codes
 WS_CLOSE_PROTOCOL_ERROR = 1002
 WS_CLOSE_POLICY_VIOLATION = 1008
@@ -197,7 +200,7 @@ class HelloAck(BaseMessage):
 
     client_id: ClientId
     bridge_id: ClientId
-    max_size: int = Field(gt=0)
+    max_message_bytes: int = Field(ge=MIN_MESSAGE_BYTES)
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -493,27 +496,6 @@ def unserializable_fields(msg: Message) -> list[str]:
 
 def dump_message_json(msg: Message) -> str:
     return msg.model_dump_json(exclude_none=True, ensure_ascii=True)
-
-
-DEFAULT_WS_MAX_SIZE = 64 * 1024 * 1024  # 64 MiB
-
-# Floor so our error responses always fit; a smaller cap fails late, as a 1009 close.
-MIN_WS_MAX_SIZE = 16 * 1024
-
-
-def ws_max_size() -> int:
-    """Max inbound websocket message size.
-
-    Note: This is a per-message (per frame reassembly) limit enforced by the websocket
-    implementation, not a cumulative session limit.
-    """
-
-    raw = os.getenv("IDA_BRIDGE_WS_MAX_SIZE", str(DEFAULT_WS_MAX_SIZE))
-    size = int(raw)
-    if size < MIN_WS_MAX_SIZE:
-        msg = f"IDA_BRIDGE_WS_MAX_SIZE must be >= {MIN_WS_MAX_SIZE}"
-        raise ValueError(msg)
-    return size
 
 
 def bridge_host() -> str:

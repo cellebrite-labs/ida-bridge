@@ -6,7 +6,7 @@ import pytest
 
 from ida_bridge import protocol
 from ida_bridge.agent_client import AgentClient, BridgeDisconnected, open_agent_client
-from tests.harness import ServeBridge, connect_client, recv_msg, send_msg
+from tests.harness import ServeBridge, connect_client, recv_msg, respond_exec_ok, send_msg
 
 SESSION_ID = "sess-1"
 
@@ -53,13 +53,34 @@ class TestAgentClientLifecycle:
             finally:
                 await client.close()
 
-    async def test_agent_stores_advertised_max_size(self, serve_bridge: ServeBridge) -> None:
+    async def test_agent_stores_advertised_max_message_bytes(self, serve_bridge: ServeBridge) -> None:
         async with serve_bridge() as (server, url):
             client = AgentClient(client_id="agent-1", url=url)
             await client.connect()
             try:
-                assert client._frame_limit() == server.max_size
+                assert client._conn is not None
+                assert client._conn.max_message_bytes == server.max_message_bytes
             finally:
+                await client.close()
+
+    async def test_agent_receives_responses_over_the_websockets_default_limit(self, serve_bridge: ServeBridge) -> None:
+        # websockets caps inbound messages at 1 MiB unless told otherwise; the server bounds what we receive.
+        result = "z" * (2 * 1024 * 1024)
+        async with serve_bridge() as (_, url):
+            ida = await connect_client(url, role=protocol.ROLE_IDA, client_id="ida-1")
+            client = AgentClient(client_id="agent-1", url=url)
+            await client.connect()
+            try:
+                exec_task = asyncio.create_task(client.exec("ida-1", "big"))
+                fwd = await asyncio.wait_for(recv_msg(ida), timeout=1.0)
+                assert isinstance(fwd, protocol.ExecRequest)
+                await respond_exec_ok(ida, fwd, result=result)
+
+                resp = await asyncio.wait_for(exec_task, timeout=5.0)
+                assert resp.ok is True
+                assert resp.result == result
+            finally:
+                await ida.close()
                 await client.close()
 
     async def test_double_connect_raises(self, serve_bridge: ServeBridge) -> None:

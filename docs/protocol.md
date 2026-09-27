@@ -24,8 +24,8 @@ Defines the websocket protocol between `agent`, `bridge`, and `ida`.
 ## Transport
 
 - non-text frames are rejected with `ProtocolError`, then close `1002`
-- oversized inbound frames may be rejected by the websocket server with `1009`; IDA replies that exceed the cap are not sent and the target answers `RESPONSE_TOO_LARGE` instead
-- the server owns the frame limit. `IDA_BRIDGE_WS_MAX_SIZE` is a server-side setting (default `67108864`, minimum `16384`). The server advertises that effective cap as `max_size` on `hello_ack`. Clients use the advertised value for send-side checks. Until the ack, a client falls back to its local `IDA_BRIDGE_WS_MAX_SIZE`. Clients connect with no inbound cap: a frame the server accepted must not be dropped by a smaller local default
+- a message over the limit is rejected by the receiving websocket with `1009`; IDA replies over the limit are not sent, and the target answers `RESPONSE_TOO_LARGE` instead
+- the server owns the message limit, because it receives both requests and replies. It advertises the limit as `max_message_bytes` in `hello_ack`, and clients check each message against it before sending
 
 ## Roles and client IDs
 
@@ -83,8 +83,6 @@ Fields:
 - `client_id`: non-empty string, unique among connected clients
 - `meta`: free-form JSON object
 
-`hello_ack.max_size` is the server's effective inbound frame limit, in bytes. Clients must use it for send-side size checks. A client environment's `IDA_BRIDGE_WS_MAX_SIZE` does not change the cap.
-
 ### `hello_ack`
 
 ```json
@@ -93,13 +91,15 @@ Fields:
   "type": "hello_ack",
   "client_id": "agent-1",
   "bridge_id": "bridge",
-  "max_size": 67108864,
+  "max_message_bytes": 67108864,
   "meta": {
     "server": "ida-bridge",
     "instance_id": "bridge-12345"
   }
 }
 ```
+
+`hello_ack.max_message_bytes` is the server's inbound message limit, in bytes, and at least `16384`. Clients must use it for send-side size checks.
 
 ## Allowed routing
 
@@ -323,7 +323,7 @@ Codes:
 - `TIMEOUT`: bridge-side request timeout
 - `QUEUE_FULL`: IDA runtime rejected the request because its request queue is full
 - `RESPONSE_NOT_SERIALIZABLE`: IDA runtime could not JSON-serialize the response; the original payload is dropped and the target keeps serving
-- `RESPONSE_TOO_LARGE`: serialized IDA response exceeded the websocket frame limit; the original payload is dropped and the target keeps serving
+- `RESPONSE_TOO_LARGE`: serialized IDA response exceeded the websocket message limit; the original payload is dropped and the target keeps serving
 - `TARGET_INTERNAL_ERROR`: unexpected exception in the IDA request handler; the target keeps serving
 - `SESSION_CONFLICT`: target exec environment is owned by another session
 - `TAKEOVER_PENDING`: ownership transfer in progress

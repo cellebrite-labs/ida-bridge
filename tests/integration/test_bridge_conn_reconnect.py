@@ -29,7 +29,7 @@ async def _serve_handshake(*, port: int, close_after_ack: bool) -> None:
         ack = protocol.HelloAck(
             client_id=msg.client_id,
             bridge_id="bridge",
-            max_size=protocol.ws_max_size(),
+            max_message_bytes=protocol.MIN_MESSAGE_BYTES,
             meta={"server": "test"},
         )
         await ws.send(protocol.dump_message_json(ack))
