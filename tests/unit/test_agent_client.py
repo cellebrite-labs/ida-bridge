@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from ida_bridge import protocol
-from ida_bridge.agent_client import AgentClient, BridgeDisconnected, _ConnState
+from ida_bridge.agent_client import AgentClient, RequestTooLarge, _ConnState
 
 LIMIT = protocol.MIN_MESSAGE_BYTES * 2
 
@@ -23,7 +23,7 @@ class _RecordingWS:
 
 @pytest.mark.parametrize(
     ("code_size", "raised"),
-    [(protocol.MIN_MESSAGE_BYTES + 64, _ReachedSocket), (LIMIT + 64, BridgeDisconnected)],
+    [(protocol.MIN_MESSAGE_BYTES + 64, _ReachedSocket), (LIMIT + 64, RequestTooLarge)],
     ids=["under-limit", "over-limit"],
 )
 async def test_request_size_is_checked_against_the_advertised_limit(code_size: int, raised: type[Exception]) -> None:

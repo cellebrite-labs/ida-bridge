@@ -20,6 +20,10 @@ class BridgeDisconnected(RuntimeError):
     pass
 
 
+class RequestTooLarge(ValueError):
+    """The request exceeds the server's message limit; nothing was sent."""
+
+
 @dataclass(frozen=True)
 class _ConnState:
     ws: Any
@@ -258,8 +262,8 @@ class AgentClient:
 
         data = protocol.dump_message_json(req)
         if len(data) > conn.max_message_bytes:
-            raise BridgeDisconnected(
-                f"request is {len(data)} bytes; server message limit is {conn.max_message_bytes} bytes. Shrink the request."
+            raise RequestTooLarge(
+                f"request is {len(data)} bytes; server message limit is {conn.max_message_bytes} bytes"
             )
 
         fut: asyncio.Future[protocol.Message] = asyncio.get_running_loop().create_future()

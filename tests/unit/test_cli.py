@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ida_bridge import protocol
-from ida_bridge.agent_client import BridgeDisconnected, BridgeProtocolError
+from ida_bridge.agent_client import BridgeDisconnected, BridgeProtocolError, RequestTooLarge
 from ida_bridge.cli_agent import (
     _print_available_ida_instances_human,
     _run,
@@ -201,6 +201,15 @@ class TestRun:
 
         assert _run(fail()) == 1
         assert "gone" in capsys.readouterr().err
+
+    def test_request_too_large(self, capsys: pytest.CaptureFixture[str]) -> None:
+        async def fail():
+            raise RequestTooLarge("request is 9 bytes")
+
+        assert _run(fail()) == 1
+        err = capsys.readouterr().err
+        assert "request is 9 bytes" in err
+        assert "shrink --sql/--code/--file" in err
 
 
 # ---------------------------------------------------------------------------

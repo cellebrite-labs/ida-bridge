@@ -5,8 +5,33 @@ from pathlib import Path
 import sys
 
 from ida_bridge import protocol
+from ida_bridge.agent_client import BridgeDisconnected, BridgeProtocolError, RequestTooLarge
 
 _INLINE_FILENAME = "<ida-bridge -c>"
+
+BRIDGE_ERRORS = (ConnectionRefusedError, BridgeDisconnected, BridgeProtocolError, RequestTooLarge)
+
+
+def bridge_error_text(exc: Exception) -> str:
+    match exc:
+        case ConnectionRefusedError():
+            return (
+                f"error: cannot connect to bridge at {protocol.bridge_url()}\n"
+                "Hint: start it with `ida-bridge server start`."
+            )
+        case BridgeProtocolError():
+            return (
+                f"error: bridge protocol error: {exc.err.code}: {exc.err.message}\n"
+                "Hint: check client/server versions and the server log."
+            )
+        case BridgeDisconnected():
+            return f"error: bridge disconnected: {exc}\nHint: check `ida-bridge server log`."
+        case RequestTooLarge():
+            return (
+                f"error: {exc}\n"
+                "Hint: shrink --sql/--code/--file, or write the data to a file on the IDA host and read it from the script."
+            )
+    raise TypeError(f"not a bridge error: {exc!r}")
 
 
 def stateful_arg_error(*, stateful: bool, session_id: str | None) -> str | None:

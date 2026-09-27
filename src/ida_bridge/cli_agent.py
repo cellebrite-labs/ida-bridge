@@ -5,8 +5,10 @@ import os
 import sys
 
 from ida_bridge import protocol
-from ida_bridge.agent_client import BridgeDisconnected, BridgeProtocolError, open_agent_client
+from ida_bridge.agent_client import open_agent_client
 from ida_bridge.cli_common import (
+    BRIDGE_ERRORS,
+    bridge_error_text,
     build_exec_code,
     format_client_list_human,
     format_human_section,
@@ -87,24 +89,8 @@ async def cmd_reset(args) -> int:
 def _run(coro) -> int:
     try:
         return asyncio.run(coro)
-    except ConnectionRefusedError:
-        print(
-            f"error: cannot connect to bridge at {protocol.bridge_url()}\nHint: start it with `ida-bridge server start`.",
-            file=sys.stderr,
-        )
-        return 1
-    except BridgeProtocolError as exc:
-        err = exc.err
-        print(
-            f"error: bridge protocol error: {err.code}: {err.message}\nHint: check client/server versions and the server log.",
-            file=sys.stderr,
-        )
-        return 1
-    except BridgeDisconnected as exc:
-        print(
-            f"error: bridge disconnected: {exc}\nHint: check `ida-bridge server log`.",
-            file=sys.stderr,
-        )
+    except BRIDGE_ERRORS as exc:
+        print(bridge_error_text(exc), file=sys.stderr)
         return 1
 
 
