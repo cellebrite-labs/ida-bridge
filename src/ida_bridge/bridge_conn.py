@@ -79,6 +79,7 @@ class BridgeConn:
         # Log throttling: announce retry/backoff once per disconnect cycle.
         self._retry_announced = False
         self._backoff_announced = False
+        self._advertised_max_size: int | None = None
 
     def start(self) -> None:
         """Start the WS thread (non-blocking)."""
@@ -130,6 +131,12 @@ class BridgeConn:
 
         return None
 
+    def _frame_limit(self) -> int:
+        """Server-advertised cap, or the local setting until the handshake ack."""
+        if self._advertised_max_size is not None:
+            return self._advertised_max_size
+        return protocol.ws_max_size()
+
     def send(self, msg: protocol.Message) -> None:
         """Send a message, or replace it with an error when it cannot be delivered.
 
@@ -157,7 +164,7 @@ class BridgeConn:
                 log.error("error response not serializable", exc_info=True)
                 return
 
-        limit = protocol.ws_max_size()
+        limit = self._frame_limit()
         if len(data) > limit:
             log.error("message is %d bytes, over the %d byte frame limit", len(data), limit)
             if not handling_response:
@@ -190,6 +197,7 @@ class BridgeConn:
         """Clear ready state and drop pending requests."""
         was_ready = self._ready.is_set()
         self._ready.clear()
+        self._advertised_max_size = None
 
         if was_ready:
             with self._conn_lock:
@@ -284,6 +292,7 @@ class BridgeConn:
                 # Duplicate hello_ack — protocol violation.
                 self._reject(ws)
                 return
+            self._advertised_max_size = msg.max_size
             self._ready.set()
             log.info("connected: %s", msg.client_id)
             return

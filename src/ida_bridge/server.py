@@ -137,6 +137,10 @@ class BridgeServer:
     def bridge_id(self) -> str:
         return self._bridge_id
 
+    @property
+    def max_size(self) -> int:
+        return self._max_size
+
     def __init__(
         self,
         *,
@@ -145,6 +149,7 @@ class BridgeServer:
         timeout_tick_s: float = 0.5,
         instance_id: str | None = None,
         stateful_ttl_s: float | None = None,
+        max_size: int | None = None,
     ):
         # Defaults come from env, but tests can override everything via ctor.
         bridge_id = bridge_client_id if bridge_client_id is not None else os.getenv("IDA_BRIDGE_CLIENT_ID", "bridge")
@@ -169,6 +174,9 @@ class BridgeServer:
         self._timeout_tick_s = float(timeout_tick_s)
         self._stateful_ttl_s = float(ttl)
         self._instance_id = instance_id or f"bridge-{os.getpid()}"
+        self._max_size = WS_MAX_SIZE if max_size is None else max_size
+        if self._max_size < protocol.MIN_WS_MAX_SIZE:
+            raise ValueError(f"max_size must be >= {protocol.MIN_WS_MAX_SIZE}")
 
         self._timeout_task: asyncio.Task[None] | None = None
         self._log_prune_task: asyncio.Task[None] | None = None
@@ -588,6 +596,7 @@ class BridgeServer:
         ack = protocol.HelloAck(
             client_id=client_id,
             bridge_id=self._bridge_id,
+            max_size=self._max_size,
             meta={
                 "server": "ida-bridge",
                 "instance_id": self._instance_id,
@@ -1165,7 +1174,7 @@ async def main() -> None:
     # WS thread long enough to miss the default 20s pong deadline.  60s
     # accommodates these bursts while still detecting genuinely dead
     # connections.
-    async with websockets.serve(server.handler, HOST, PORT, max_size=WS_MAX_SIZE, ping_timeout=60):
+    async with websockets.serve(server.handler, HOST, PORT, max_size=server.max_size, ping_timeout=60):
         try:
             await asyncio.Future()
         finally:

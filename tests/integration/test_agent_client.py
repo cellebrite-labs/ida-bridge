@@ -53,6 +53,15 @@ class TestAgentClientLifecycle:
             finally:
                 await client.close()
 
+    async def test_agent_stores_advertised_max_size(self, serve_bridge: ServeBridge) -> None:
+        async with serve_bridge() as (server, url):
+            client = AgentClient(client_id="agent-1", url=url)
+            await client.connect()
+            try:
+                assert client._frame_limit() == server.max_size
+            finally:
+                await client.close()
+
     async def test_double_connect_raises(self, serve_bridge: ServeBridge) -> None:
         async with serve_bridge() as (_, url):
             client = AgentClient(client_id="agent-1", url=url)

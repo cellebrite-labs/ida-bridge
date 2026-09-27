@@ -11,6 +11,10 @@ UUID_V1 = "f47ac10b-58cc-1372-a567-0e02b2c3d479"  # third group starts with 1 =>
 UUID_V5 = "f47ac10b-58cc-5372-a567-0e02b2c3d479"  # third group starts with 5 => v5
 
 
+def test_protocol_version_is_5() -> None:
+    assert protocol.PROTO_VERSION == 5
+
+
 def test_parse_requires_version_on_wire() -> None:
     raw = json.dumps({"type": protocol.MSG_HELLO, "role": protocol.ROLE_AGENT, "client_id": "agent-1", "meta": {}})
     with pytest.raises(ValidationError) as excinfo:

@@ -28,7 +28,7 @@ from pydantic_core import PydanticCustomError
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_URL = f"ws://{DEFAULT_HOST}:{DEFAULT_PORT}"
-PROTO_VERSION = 4
+PROTO_VERSION = 5
 
 # WebSocket close codes
 WS_CLOSE_PROTOCOL_ERROR = 1002
@@ -197,6 +197,7 @@ class HelloAck(BaseMessage):
 
     client_id: ClientId
     bridge_id: ClientId
+    max_size: int = Field(gt=0)
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
