@@ -371,7 +371,7 @@ Connection-level error codes:
 
 ## Correlation, ordering, and concurrency
 
-- multiple requests may be in flight concurrently
+- the bridge has many requests in flight across connections; an agent connection has at most one
 - responses may arrive out of order
 - clients must correlate by `id`
 - the bridge enforces strict response correlation by `(id, route, response type)`

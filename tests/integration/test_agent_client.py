@@ -26,11 +26,6 @@ class TestAgentClientInit:
         with pytest.raises(RuntimeError, match="not connected"):
             _ = client.bridge_id
 
-    async def test_bridge_meta_before_connect_raises(self) -> None:
-        client = AgentClient(client_id="a")
-        with pytest.raises(RuntimeError, match="not connected"):
-            _ = client.bridge_meta
-
     async def test_not_connected_initially(self) -> None:
         client = AgentClient(client_id="a")
         assert client.is_connected() is False
@@ -49,7 +44,6 @@ class TestAgentClientLifecycle:
             try:
                 assert client.is_connected()
                 assert client.bridge_id == "test-bridge"
-                assert isinstance(client.bridge_meta, dict)
             finally:
                 await client.close()
 
@@ -132,7 +126,7 @@ class TestClosePendingRequests:
 
                 await client.close()
 
-                with pytest.raises(BridgeDisconnected, match="client closed"):
+                with pytest.raises(BridgeDisconnected, match="bridge disconnected"):
                     await exec_task
             finally:
                 await ida.close()
@@ -144,9 +138,8 @@ class TestClosePendingRequests:
 
 
 class TestBridgeDisconnect:
-    async def test_hard_disconnect_fails_pending(self, serve_bridge: ServeBridge) -> None:
-        """Simulates the listener detecting a broken connection."""
-        async with serve_bridge() as (_, url):
+    async def test_bridge_drop_mid_request_disconnects_the_client(self, serve_bridge: ServeBridge) -> None:
+        async with serve_bridge() as (server, url):
             ida = await connect_client(url, role=protocol.ROLE_IDA, client_id="ida-1")
             client = AgentClient(client_id="agent-1", url=url)
             await client.connect()
@@ -154,9 +147,9 @@ class TestBridgeDisconnect:
                 exec_task = asyncio.create_task(client.exec("ida-1", "1+1"))
                 _ = await asyncio.wait_for(recv_msg(ida), timeout=1.0)
 
-                await client._hard_disconnect(BridgeDisconnected("test disconnect"))
+                await server._clients["agent-1"].ws.close()
 
-                with pytest.raises(BridgeDisconnected, match="test disconnect"):
+                with pytest.raises(BridgeDisconnected, match="bridge disconnected"):
                     await exec_task
 
                 assert client.is_connected() is False
@@ -169,13 +162,12 @@ class TestBridgeDisconnect:
 
 
 # ---------------------------------------------------------------------------
-# Cancelled / abandoned requests
+# Cancelled requests
 # ---------------------------------------------------------------------------
 
 
-class TestAbandonedRequests:
-    async def test_cancelled_request_allows_late_response(self, serve_bridge: ServeBridge) -> None:
-        """A cancelled request should not kill the connection; the late response is silently dropped."""
+class TestCancelledRequest:
+    async def test_cancelled_request_disconnects_the_client(self, serve_bridge: ServeBridge) -> None:
         async with serve_bridge() as (_, url):
             ida = await connect_client(url, role=protocol.ROLE_IDA, client_id="ida-1")
             client = AgentClient(client_id="agent-1", url=url)
@@ -183,38 +175,6 @@ class TestAbandonedRequests:
             try:
                 with pytest.raises(asyncio.TimeoutError):
                     await asyncio.wait_for(client.exec("ida-1", "1+1"), timeout=0.05)
-
-                fwd = await asyncio.wait_for(recv_msg(ida), timeout=1.0)
-                assert isinstance(fwd, protocol.ExecRequest)
-
-                await send_msg(
-                    ida,
-                    protocol.ExecResponse(id=fwd.id, src="ida-1", dst="agent-1", ok=True, result=2),
-                )
-
-                await asyncio.sleep(0.05)
-                assert client.is_connected()
-
-                list_resp = await asyncio.wait_for(client.list(), timeout=1.0)
-                assert list_resp.ok
-            finally:
-                await ida.close()
-                await client.close()
-
-    async def test_too_many_abandoned_requests_disconnects(self, serve_bridge: ServeBridge) -> None:
-        async with serve_bridge() as (_, url):
-            ida = await connect_client(url, role=protocol.ROLE_IDA, client_id="ida-1")
-            client = AgentClient(client_id="agent-1", url=url)
-            await client.connect()
-            try:
-                for _ in range(AgentClient._MAX_ABANDONED_IDS + 1):
-                    with pytest.raises((asyncio.TimeoutError, BridgeDisconnected)):
-                        await asyncio.wait_for(client.exec("ida-1", "1"), timeout=0.01)
-
-                    try:
-                        await asyncio.wait_for(recv_msg(ida), timeout=0.05)
-                    except TimeoutError:
-                        pass
 
                 assert client.is_connected() is False
             finally:
