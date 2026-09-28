@@ -5,19 +5,20 @@ from pathlib import Path
 import sys
 
 from ida_bridge import protocol
-from ida_bridge.agent_client import BridgeDisconnected, BridgeProtocolError, RequestTooLarge
+from ida_bridge.agent_client import BridgeDisconnected, BridgeProtocolError, BridgeUnreachable, RequestTooLarge
 
 _INLINE_FILENAME = "<ida-bridge -c>"
 
-BRIDGE_ERRORS = (ConnectionRefusedError, BridgeDisconnected, BridgeProtocolError, RequestTooLarge)
+BRIDGE_ERRORS = (BridgeUnreachable, BridgeDisconnected, BridgeProtocolError, RequestTooLarge)
 
 
 def bridge_error_text(exc: Exception) -> str:
     match exc:
-        case ConnectionRefusedError():
+        case BridgeUnreachable():
             return (
-                f"error: cannot connect to bridge at {protocol.bridge_url()}\n"
-                "Hint: start it with `ida-bridge server start`."
+                f"error: {exc}\n"
+                "Hint: is the bridge running (`ida-bridge server start`), "
+                "and are IDA_BRIDGE_CONNECT_HOST/IDA_BRIDGE_PORT correct?"
             )
         case BridgeProtocolError():
             return (

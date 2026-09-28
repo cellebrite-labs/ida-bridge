@@ -4,7 +4,7 @@ from typing import Any, NoReturn
 
 from pydantic import ValidationError
 import websockets
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
 from . import protocol
 
@@ -17,6 +17,10 @@ class BridgeProtocolError(RuntimeError):
 
 class BridgeDisconnected(RuntimeError):
     pass
+
+
+class BridgeUnreachable(RuntimeError):
+    """No websocket connection to the bridge could be opened; nothing was sent."""
 
 
 class RequestTooLarge(ValueError):
@@ -52,7 +56,10 @@ class AgentClient:
         if self._conn is not None:
             raise RuntimeError("already connected")
 
-        ws = await websockets.connect(self._url, max_size=None)
+        try:
+            ws = await websockets.connect(self._url, max_size=None)
+        except (OSError, InvalidHandshake) as exc:
+            raise BridgeUnreachable(f"cannot connect to bridge at {self._url}: {exc}") from exc
 
         try:
             # Handshake: hello must be first, and we expect hello_ack next.
@@ -88,6 +95,8 @@ class AgentClient:
             self._conn = _ConnState(ws=ws, max_message_bytes=msg.max_message_bytes)
             return None
 
+        except ConnectionClosed as exc:
+            raise BridgeDisconnected(f"bridge disconnected: {exc}") from exc
         except Exception:
             await ws.close()
             raise
