@@ -696,6 +696,7 @@ class BridgeServer:
             kind=kind,
             clients=clients,
         )
+        log.info("list [%s] %s kind=%s -> %d clients", msg.id[:8], agent_id, kind, len(clients))
         ok = await self._send_best_effort(ws, payload, context="list")
         if not ok:
             await self._disconnect(agent_id)
