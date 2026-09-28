@@ -8,6 +8,7 @@
 ### Changed
 - Protocol version bumped to 5.
 - `IDA_BRIDGE_WS_MAX_SIZE` is renamed `IDA_BRIDGE_MAX_MESSAGE_BYTES` and applies to the server only.
+- `IDA_BRIDGE_HOST` is split into `IDA_BRIDGE_LISTEN_HOST` (server) and `IDA_BRIDGE_CONNECT_HOST` (clients).
 
 ### Fixed
 - Unserializable IDA responses and unexpected request-handler exceptions no longer take down the target. They reply `RESPONSE_NOT_SERIALIZABLE` / `TARGET_INTERNAL_ERROR` and keep serving ([#8](https://github.com/cellebrite-labs/ida-bridge/issues/8)).

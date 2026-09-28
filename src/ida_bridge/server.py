@@ -14,8 +14,6 @@ from websockets.exceptions import ConnectionClosed
 
 from ida_bridge import logs, protocol
 
-HOST = protocol.bridge_host()
-PORT = protocol.bridge_port()
 DEFAULT_MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 
 _DEFAULT_SERVER_LOG_MAX_BYTES = 10 * 1024 * 1024
@@ -1145,17 +1143,19 @@ class BridgeServer:
 async def main() -> None:
     _configure_logging()
 
+    host = protocol.listen_host()
+    port = protocol.bridge_port()
     max_message_bytes = int(os.getenv("IDA_BRIDGE_MAX_MESSAGE_BYTES", DEFAULT_MAX_MESSAGE_BYTES))
     server = BridgeServer(max_message_bytes=max_message_bytes)
     server.start_background_tasks()
 
-    log.info("Starting server on %s", protocol.bridge_url())
+    log.info("Starting server on %s:%s", host, port)
     # IDA plugins run exec on IDA's main thread while a background thread
     # handles WebSocket I/O.  Under heavy load Python's GIL can starve the
     # WS thread long enough to miss the default 20s pong deadline.  60s
     # accommodates these bursts while still detecting genuinely dead
     # connections.
-    async with server.serve(HOST, PORT, ping_timeout=60):
+    async with server.serve(host, port, ping_timeout=60):
         try:
             await asyncio.Future()
         finally:

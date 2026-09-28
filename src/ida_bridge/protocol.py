@@ -499,8 +499,24 @@ def dump_message_json(msg: Message) -> str:
     return msg.model_dump_json(exclude_none=True, ensure_ascii=True)
 
 
-def bridge_host() -> str:
-    return os.getenv("IDA_BRIDGE_HOST", DEFAULT_HOST)
+def _host(var: str) -> str:
+    if "IDA_BRIDGE_HOST" in os.environ:
+        raise ValueError(
+            "IDA_BRIDGE_HOST is split into IDA_BRIDGE_LISTEN_HOST (server) and IDA_BRIDGE_CONNECT_HOST (clients)"
+        )
+    host = os.getenv(var, DEFAULT_HOST)
+    # Rejects IPv6 literals (unsupported) and a port given in the host.
+    if ":" in host:
+        raise ValueError(f"{var} must be an IPv4 address or hostname, without a port: {host!r}")
+    return host
+
+
+def listen_host() -> str:
+    return _host("IDA_BRIDGE_LISTEN_HOST")
+
+
+def connect_host() -> str:
+    return _host("IDA_BRIDGE_CONNECT_HOST")
 
 
 def bridge_port() -> int:
@@ -512,7 +528,7 @@ def bridge_port() -> int:
 
 
 def bridge_url() -> str:
-    return f"ws://{bridge_host()}:{bridge_port()}"
+    return f"ws://{connect_host()}:{bridge_port()}"
 
 
 # ---------------------------------------------------------------------------

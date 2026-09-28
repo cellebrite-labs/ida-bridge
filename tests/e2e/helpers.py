@@ -77,7 +77,7 @@ def spawn_idalib(
         raise ValueError("exactly one of binary_path or idb_path must be set")
 
     env = os.environ.copy()
-    env["IDA_BRIDGE_HOST"] = bridge.host
+    env["IDA_BRIDGE_CONNECT_HOST"] = bridge.host
     env["IDA_BRIDGE_PORT"] = str(bridge.port)
 
     if binary_path is not None:
@@ -235,7 +235,7 @@ def run_idalib_runner_to_exit(
         raise ValueError("exactly one of idb or (input_file and out_idb) must be set")
 
     env = os.environ.copy()
-    env["IDA_BRIDGE_HOST"] = bridge.host
+    env["IDA_BRIDGE_CONNECT_HOST"] = bridge.host
     env["IDA_BRIDGE_PORT"] = str(bridge.port)
 
     if idb is not None:

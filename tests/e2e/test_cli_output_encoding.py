@@ -18,7 +18,7 @@ TEXT = "\u00e9\u4e2d"
 
 
 def _bridge_env(bridge: BridgeInfo) -> dict[str, str]:
-    return {**os.environ, "IDA_BRIDGE_HOST": bridge.host, "IDA_BRIDGE_PORT": str(bridge.port)}
+    return {**os.environ, "IDA_BRIDGE_CONNECT_HOST": bridge.host, "IDA_BRIDGE_PORT": str(bridge.port)}
 
 
 def _run_cli(args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[bytes]:

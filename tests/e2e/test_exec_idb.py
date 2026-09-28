@@ -26,7 +26,7 @@ def _run_exec_idb(
 ) -> subprocess.CompletedProcess[str]:
     """Run ``ida-bridge exec-idb`` as a subprocess."""
     env = os.environ.copy()
-    env["IDA_BRIDGE_HOST"] = bridge.host
+    env["IDA_BRIDGE_CONNECT_HOST"] = bridge.host
     env["IDA_BRIDGE_PORT"] = str(bridge.port)
 
     cmd = [sys.executable, "-m", "ida_bridge.cli", "exec-idb"]
