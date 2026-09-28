@@ -1,6 +1,8 @@
 import contextlib
 from dataclasses import dataclass
+import os
 from typing import Any, NoReturn
+from uuid import uuid4
 
 from pydantic import ValidationError
 import websockets
@@ -36,7 +38,10 @@ class _ConnState:
 class AgentClient:
     """Agent side attachment to bridge server. One request in flight at a time."""
 
-    def __init__(self, *, client_id: str, url: str | None = None):
+    def __init__(self, *, client_id: str | None = None, url: str | None = None):
+        # A PID-based default would collide across PID namespaces (sandboxes).
+        if client_id is None:
+            client_id = f"agent-{uuid4().hex[:12]}"
         if not client_id:
             raise ValueError("client_id must be a non-empty string")
 
@@ -63,7 +68,8 @@ class AgentClient:
 
         try:
             # Handshake: hello must be first, and we expect hello_ack next.
-            hello = protocol.Hello(role=protocol.ROLE_AGENT, client_id=self._client_id, meta=meta or {})
+            hello_meta = {"pid": os.getpid(), **(meta or {})}
+            hello = protocol.Hello(role=protocol.ROLE_AGENT, client_id=self._client_id, meta=hello_meta)
             await ws.send(protocol.dump_message_json(hello))
 
             raw = await ws.recv()
@@ -246,7 +252,7 @@ class AgentClient:
 @contextlib.asynccontextmanager
 async def open_agent_client(
     *,
-    client_id: str,
+    client_id: str | None = None,
     url: str | None = None,
     meta: dict[str, Any] | None = None,
 ):

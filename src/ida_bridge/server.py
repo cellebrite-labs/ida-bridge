@@ -589,7 +589,7 @@ class BridgeServer:
         self._by_ws[ws] = client_id
 
         if msg.role == protocol.ROLE_AGENT:
-            log.info("Agent connected: %s", client_id)
+            log.info("Agent connected: %s tool=%s pid=%s", client_id, msg.meta.get("tool"), msg.meta.get("pid"))
         elif msg.role == protocol.ROLE_IDA:
             idb = os.path.basename(msg.meta.get("idb_path", "")) or "(no idb)"
             log.info("IDA connected: %s [%s]", client_id, idb)

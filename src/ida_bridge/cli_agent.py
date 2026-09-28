@@ -1,7 +1,6 @@
 import argparse
 import asyncio
 import json
-import os
 import sys
 
 from ida_bridge import protocol
@@ -22,8 +21,7 @@ def _print_json(data) -> None:
     print(json.dumps(data, indent=2, ensure_ascii=True))
 
 
-def _connect_meta() -> dict:
-    return {"tool": "cli", "pid": os.getpid()}
+_META = {"tool": "cli"}
 
 
 async def _print_available_ida_instances_human(client) -> None:
@@ -37,7 +35,7 @@ async def _print_available_ida_instances_human(client) -> None:
 
 
 async def cmd_list(args) -> int:
-    async with open_agent_client(client_id=args._client_id, meta=_connect_meta()) as client:
+    async with open_agent_client(meta=_META) as client:
         resp = await client.list(kind=args.kind)
 
         if args.json:
@@ -49,7 +47,7 @@ async def cmd_list(args) -> int:
 
 
 async def cmd_exec(args) -> int:
-    async with open_agent_client(client_id=args._client_id, meta=_connect_meta()) as client:
+    async with open_agent_client(meta=_META) as client:
         code = build_exec_code(sql=args.sql, code=args.code, files=args.file)
 
         resp = await client.exec(
@@ -67,7 +65,7 @@ async def cmd_exec(args) -> int:
 
 
 async def cmd_reset(args) -> int:
-    async with open_agent_client(client_id=args._client_id, meta=_connect_meta()) as client:
+    async with open_agent_client(meta=_META) as client:
         resp = await client.reset(
             args.target,
             session_id=args.session_id,
@@ -138,9 +136,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not hasattr(args, "json"):
         args.json = False
-
-    # Auto-generated per-process client id to avoid collisions when running multiple CLIs.
-    args._client_id = f"agent-cli-{os.getpid()}"
 
     if args.cmd == "list":
         return _run(cmd_list(args))

@@ -3,7 +3,6 @@
 import argparse
 import asyncio
 import json
-import os
 import sys
 
 from ida_bridge.agent_client import open_agent_client
@@ -11,12 +10,10 @@ from ida_bridge.cli_common import BRIDGE_ERRORS, bridge_error_text, build_exec_c
 from ida_bridge.supervisor import StartError, start_idalib, terminate_pid
 from ida_bridge.supervisor.bridge import bridge_quit, bridge_save
 
-_CLIENT_ID = f"exec-idb-{os.getpid()}"
-
 
 async def _exec(target: str, code: str, *, timeout_s: int | None):
     """Execute code against a connected IDA client."""
-    async with open_agent_client(client_id=_CLIENT_ID) as client:
+    async with open_agent_client(meta={"tool": "exec-idb"}) as client:
         return await client.exec(target, code, timeout_s=timeout_s)
 
 

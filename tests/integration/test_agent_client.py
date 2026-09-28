@@ -1,6 +1,7 @@
 """Tests for ida_bridge.agent_client (AgentClient state management and error paths)."""
 
 import asyncio
+import os
 
 import pytest
 
@@ -46,6 +47,11 @@ class TestAgentClientLifecycle:
                 assert client.bridge_id == "test-bridge"
             finally:
                 await client.close()
+
+    async def test_hello_carries_the_pid_and_the_callers_meta(self, serve_bridge: ServeBridge) -> None:
+        async with serve_bridge() as (server, url):
+            async with open_agent_client(client_id="agent-1", url=url, meta={"tool": "test"}):
+                assert server._clients["agent-1"].meta == {"pid": os.getpid(), "tool": "test"}
 
     async def test_agent_stores_advertised_max_message_bytes(self, serve_bridge: ServeBridge) -> None:
         async with serve_bridge() as (server, url):

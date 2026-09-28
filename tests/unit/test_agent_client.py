@@ -86,3 +86,9 @@ async def test_a_bad_reply_is_a_protocol_violation_that_disconnects(reply: str |
 
     assert client.is_connected() is False
     assert ws.close_code == protocol.WS_CLOSE_PROTOCOL_ERROR
+
+
+def test_clients_without_an_id_get_distinct_ids() -> None:
+    first, second = AgentClient(), AgentClient()
+    assert first._client_id != second._client_id
+    assert first._client_id.startswith("agent-")
