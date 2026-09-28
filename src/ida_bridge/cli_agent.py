@@ -1,12 +1,13 @@
 import argparse
 import asyncio
 import json
-import os
 import sys
 
 from ida_bridge import protocol
-from ida_bridge.agent_client import BridgeDisconnected, BridgeProtocolError, open_agent_client
+from ida_bridge.agent_client import open_agent_client
 from ida_bridge.cli_common import (
+    BRIDGE_ERRORS,
+    bridge_error_text,
     build_exec_code,
     format_client_list_human,
     format_human_section,
@@ -20,8 +21,7 @@ def _print_json(data) -> None:
     print(json.dumps(data, indent=2, ensure_ascii=True))
 
 
-def _connect_meta() -> dict:
-    return {"tool": "cli", "pid": os.getpid()}
+_META = {"tool": "cli"}
 
 
 async def _print_available_ida_instances_human(client) -> None:
@@ -35,7 +35,7 @@ async def _print_available_ida_instances_human(client) -> None:
 
 
 async def cmd_list(args) -> int:
-    async with open_agent_client(client_id=args._client_id, meta=_connect_meta()) as client:
+    async with open_agent_client(meta=_META) as client:
         resp = await client.list(kind=args.kind)
 
         if args.json:
@@ -47,7 +47,7 @@ async def cmd_list(args) -> int:
 
 
 async def cmd_exec(args) -> int:
-    async with open_agent_client(client_id=args._client_id, meta=_connect_meta()) as client:
+    async with open_agent_client(meta=_META) as client:
         code = build_exec_code(sql=args.sql, code=args.code, files=args.file)
 
         resp = await client.exec(
@@ -65,7 +65,7 @@ async def cmd_exec(args) -> int:
 
 
 async def cmd_reset(args) -> int:
-    async with open_agent_client(client_id=args._client_id, meta=_connect_meta()) as client:
+    async with open_agent_client(meta=_META) as client:
         resp = await client.reset(
             args.target,
             session_id=args.session_id,
@@ -87,24 +87,8 @@ async def cmd_reset(args) -> int:
 def _run(coro) -> int:
     try:
         return asyncio.run(coro)
-    except ConnectionRefusedError:
-        print(
-            f"error: cannot connect to bridge at {protocol.bridge_url()}\nHint: start it with `ida-bridge server start`.",
-            file=sys.stderr,
-        )
-        return 1
-    except BridgeProtocolError as exc:
-        err = exc.err
-        print(
-            f"error: bridge protocol error: {err.code}: {err.message}\nHint: check client/server versions and the server log.",
-            file=sys.stderr,
-        )
-        return 1
-    except BridgeDisconnected as exc:
-        print(
-            f"error: bridge disconnected: {exc}\nHint: check `ida-bridge server log`.",
-            file=sys.stderr,
-        )
+    except BRIDGE_ERRORS as exc:
+        print(bridge_error_text(exc), file=sys.stderr)
         return 1
 
 
@@ -153,9 +137,6 @@ def main(argv: list[str] | None = None) -> int:
     if not hasattr(args, "json"):
         args.json = False
 
-    # Auto-generated per-process client id to avoid collisions when running multiple CLIs.
-    args._client_id = f"agent-cli-{os.getpid()}"
-
     if args.cmd == "list":
         return _run(cmd_list(args))
     elif args.cmd == "exec":
@@ -169,7 +150,3 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--takeover and --release are mutually exclusive")
         return _run(cmd_reset(args))
     return 0
-
-
-if __name__ == "__main__":
-    main()

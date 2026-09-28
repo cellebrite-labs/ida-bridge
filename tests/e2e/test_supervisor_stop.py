@@ -25,13 +25,13 @@ def _run_supervisor_stop(
 ) -> subprocess.CompletedProcess[str]:
     """Run ``ida-bridge supervisor stop <target>`` as a subprocess."""
     env = os.environ.copy()
-    env["IDA_BRIDGE_HOST"] = bridge_host
+    env["IDA_BRIDGE_CONNECT_HOST"] = bridge_host
     env["IDA_BRIDGE_PORT"] = str(bridge_port)
 
     return subprocess.run(
         [sys.executable, "-m", "ida_bridge.cli", "supervisor", "stop", target],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         timeout=30,
         env=env,
     )

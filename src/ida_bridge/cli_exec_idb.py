@@ -3,20 +3,17 @@
 import argparse
 import asyncio
 import json
-import os
 import sys
 
-from ida_bridge.agent_client import BridgeDisconnected, BridgeProtocolError, open_agent_client
-from ida_bridge.cli_common import build_exec_code, print_exec_human
+from ida_bridge.agent_client import open_agent_client
+from ida_bridge.cli_common import BRIDGE_ERRORS, bridge_error_text, build_exec_code, print_exec_human
 from ida_bridge.supervisor import StartError, start_idalib, terminate_pid
 from ida_bridge.supervisor.bridge import bridge_quit, bridge_save
-
-_CLIENT_ID = f"exec-idb-{os.getpid()}"
 
 
 async def _exec(target: str, code: str, *, timeout_s: int | None):
     """Execute code against a connected IDA client."""
-    async with open_agent_client(client_id=_CLIENT_ID) as client:
+    async with open_agent_client(meta={"tool": "exec-idb"}) as client:
         return await client.exec(target, code, timeout_s=timeout_s)
 
 
@@ -106,14 +103,8 @@ def main(argv: list[str] | None = None) -> int:
 
             exit_code = 0 if resp.ok else 1
 
-    except ConnectionRefusedError:
-        print("error: bridge connection lost\nHint: check `ida-bridge server status`.", file=sys.stderr)
-        exit_code = 2
-    except BridgeDisconnected as exc:
-        print(f"error: bridge disconnected: {exc}\nHint: the IDA instance may have crashed.", file=sys.stderr)
-        exit_code = 2
-    except BridgeProtocolError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    except BRIDGE_ERRORS as exc:
+        print(bridge_error_text(exc), file=sys.stderr)
         exit_code = 2
     except Exception as exc:
         print(f"exec failed: {exc}", file=sys.stderr)

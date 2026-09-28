@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import pytest
 
@@ -40,6 +41,19 @@ async def test_list_all(serve_bridge: ServeBridge) -> None:
             assert ida_info.role == protocol.ROLE_IDA
             assert ida_info.meta["idb_path"] == "/tmp/test.i64"
             assert ida_info.session_id is None
+
+
+async def test_list_is_logged_with_its_result(serve_bridge: ServeBridge, caplog: pytest.LogCaptureFixture) -> None:
+    async with serve_bridge() as (server, url):
+        async with connected_client(url, role=protocol.ROLE_AGENT, client_id="agent-1") as agent:
+            with caplog.at_level(logging.INFO, logger="ida-bridge"):
+                req = protocol.ListRequest(
+                    id=protocol.new_req_id(), src="agent-1", dst=server.bridge_id, kind=protocol.LIST_KIND_IDA
+                )
+                await send_msg(agent, req)
+                await recv_msg(agent)
+
+    assert any(r.getMessage().endswith("agent-1 kind=ida -> 0 clients") for r in caplog.records)
 
 
 async def test_list_shows_session_id_after_ownership_claimed(serve_bridge: ServeBridge) -> None:

@@ -164,6 +164,9 @@ def cmd_start_ui(args: argparse.Namespace) -> int:
         assert idb_path is not None
         args_list.append(idb_path)
 
+    # IDA outlives this CLI and writes its own log (-L). It must not hold our stdout/stderr:
+    # a caller that captures them would wait for EOF until IDA exits.
+    no_output = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     launched_pid: int | None = None
     if sys.platform == "win32":
         # Direct exe launch. CREATE_NEW_PROCESS_GROUP detaches from this
@@ -172,6 +175,7 @@ def cmd_start_ui(args: argparse.Namespace) -> int:
             [str(app), *args_list],
             env=_clean_env(),
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            **no_output,
         )
         launched_pid = child.pid
         print("running:", " ".join([str(app), *args_list]), file=sys.stderr, flush=True)
@@ -182,6 +186,7 @@ def cmd_start_ui(args: argparse.Namespace) -> int:
             [str(app), *args_list],
             env=_clean_env(),
             **proc.detached_popen_kwargs(),
+            **no_output,
         )
         launched_pid = child.pid
         print("running:", " ".join([str(app), *args_list]), file=sys.stderr, flush=True)

@@ -10,11 +10,10 @@ import tempfile
 import time
 
 import pytest
-import websockets
 
 from ida_bridge import proc, protocol
 from ida_bridge.agent_client import AgentClient, open_agent_client
-from ida_bridge.server import BridgeServer
+from ida_bridge.server import DEFAULT_MAX_MESSAGE_BYTES, BridgeServer
 from ida_bridge.supervisor.commands import default_idalib_python
 
 # ---------------------------------------------------------------------------
@@ -39,12 +38,14 @@ class BridgeInfo:
     port: int
 
 
-async def start_bridge(*, timeout_s: int = 60) -> AsyncIterator[BridgeInfo]:
+async def start_bridge(
+    *, timeout_s: int = 60, max_message_bytes: int = DEFAULT_MAX_MESSAGE_BYTES
+) -> AsyncIterator[BridgeInfo]:
     """Shared async generator: start a bridge, yield it, then tear down."""
-    server = BridgeServer(default_timeout_s=timeout_s, timeout_tick_s=1.0)
+    server = BridgeServer(default_timeout_s=timeout_s, timeout_tick_s=1.0, max_message_bytes=max_message_bytes)
     server.start_background_tasks()
     try:
-        async with websockets.serve(server.handler, "127.0.0.1", 0, max_size=protocol.ws_max_size()) as ws_server:
+        async with server.serve("127.0.0.1", 0) as ws_server:
             port = ws_server.sockets[0].getsockname()[1]
             url = f"ws://127.0.0.1:{port}"
             yield BridgeInfo(server=server, url=url, host="127.0.0.1", port=port)
@@ -76,7 +77,7 @@ def spawn_idalib(
         raise ValueError("exactly one of binary_path or idb_path must be set")
 
     env = os.environ.copy()
-    env["IDA_BRIDGE_HOST"] = bridge.host
+    env["IDA_BRIDGE_CONNECT_HOST"] = bridge.host
     env["IDA_BRIDGE_PORT"] = str(bridge.port)
 
     if binary_path is not None:
@@ -234,7 +235,7 @@ def run_idalib_runner_to_exit(
         raise ValueError("exactly one of idb or (input_file and out_idb) must be set")
 
     env = os.environ.copy()
-    env["IDA_BRIDGE_HOST"] = bridge.host
+    env["IDA_BRIDGE_CONNECT_HOST"] = bridge.host
     env["IDA_BRIDGE_PORT"] = str(bridge.port)
 
     if idb is not None:

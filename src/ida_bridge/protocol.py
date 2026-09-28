@@ -28,7 +28,10 @@ from pydantic_core import PydanticCustomError
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_URL = f"ws://{DEFAULT_HOST}:{DEFAULT_PORT}"
-PROTO_VERSION = 4
+PROTO_VERSION = 5
+
+# Every server accepts messages at least this large, so our error responses always fit.
+MIN_MESSAGE_BYTES = 16 * 1024
 
 # WebSocket close codes
 WS_CLOSE_PROTOCOL_ERROR = 1002
@@ -197,6 +200,7 @@ class HelloAck(BaseMessage):
 
     client_id: ClientId
     bridge_id: ClientId
+    max_message_bytes: int = Field(ge=MIN_MESSAGE_BYTES)
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -224,7 +228,13 @@ class RoutedBase(BaseMessage):
 
 
 class RequestBase(RoutedBase):
-    # Timeout in seconds (integer) for bridge-routed requests.
+    pass
+
+
+class IdaRequest(RequestBase):
+    """A request the bridge routes to an IDA client."""
+
+    # Timeout in seconds (integer), enforced by the bridge.
     # - null/absent: use bridge default
     # - 0: no timeout
     # - >0: explicit timeout
@@ -335,7 +345,7 @@ class ListResponse(ResponseBase):
 # -----------------
 
 
-class ExecRequest(RequestBase):
+class ExecRequest(IdaRequest):
     type: Literal[MSG_EXEC] = MSG_EXEC
 
     session_id: NonBlankStr | None = None
@@ -375,7 +385,7 @@ class ExecResponse(ResponseBase):
 # -----------------
 
 
-class ResetRequest(RequestBase):
+class ResetRequest(IdaRequest):
     type: Literal[MSG_RESET] = MSG_RESET
 
     session_id: NonBlankStr
@@ -398,7 +408,7 @@ class ResetResponse(ResponseBase):
 # -----------------
 
 
-class QuitRequest(RequestBase):
+class QuitRequest(IdaRequest):
     type: Literal[MSG_QUIT] = MSG_QUIT
 
 
@@ -434,11 +444,16 @@ def parse_message_json(raw: str) -> Message:
     return _message_adapter.validate_json(raw, context={"wire": True})
 
 
-_RESPONSE_FOR_REQUEST: dict[str, type[Message]] = {
+_RESPONSE_FOR_REQUEST: dict[str, type[ResponseBase]] = {
+    MSG_LIST: ListResponse,
     MSG_EXEC: ExecResponse,
     MSG_RESET: ResetResponse,
     MSG_QUIT: QuitResponse,
 }
+
+
+def response_type(request_type: str) -> type[ResponseBase]:
+    return _RESPONSE_FOR_REQUEST[request_type]
 
 
 def error_for_request(req: Message, *, code: str, message: str, traceback: str | None = None) -> Message:
@@ -448,11 +463,7 @@ def error_for_request(req: Message, *, code: str, message: str, traceback: str |
     client id. Raises on anything that is not a request, since only requests reach the
     paths that call this; a traceback on a non-exec response is rejected by the model.
     """
-    response_cls = _RESPONSE_FOR_REQUEST.get(req.type)
-    if response_cls is None:
-        err = f"no error response for message type: {req.type}"
-        raise AssertionError(err)
-
+    response_cls = response_type(req.type)
     extra = {"traceback": traceback} if traceback is not None else {}
     return response_cls(id=req.id, src=req.dst, dst=req.src, ok=False, code=code, message=message, **extra)
 
@@ -494,29 +505,24 @@ def dump_message_json(msg: Message) -> str:
     return msg.model_dump_json(exclude_none=True, ensure_ascii=True)
 
 
-DEFAULT_WS_MAX_SIZE = 64 * 1024 * 1024  # 64 MiB
-
-# Floor so our error responses always fit; a smaller cap fails late, as a 1009 close.
-MIN_WS_MAX_SIZE = 16 * 1024
-
-
-def ws_max_size() -> int:
-    """Max inbound websocket message size.
-
-    Note: This is a per-message (per frame reassembly) limit enforced by the websocket
-    implementation, not a cumulative session limit.
-    """
-
-    raw = os.getenv("IDA_BRIDGE_WS_MAX_SIZE", str(DEFAULT_WS_MAX_SIZE))
-    size = int(raw)
-    if size < MIN_WS_MAX_SIZE:
-        msg = f"IDA_BRIDGE_WS_MAX_SIZE must be >= {MIN_WS_MAX_SIZE}"
-        raise ValueError(msg)
-    return size
+def _host(var: str) -> str:
+    if "IDA_BRIDGE_HOST" in os.environ:
+        raise ValueError(
+            "IDA_BRIDGE_HOST is split into IDA_BRIDGE_LISTEN_HOST (server) and IDA_BRIDGE_CONNECT_HOST (clients)"
+        )
+    host = os.getenv(var, DEFAULT_HOST)
+    # Rejects IPv6 literals (unsupported) and a port given in the host.
+    if ":" in host:
+        raise ValueError(f"{var} must be an IPv4 address or hostname, without a port: {host!r}")
+    return host
 
 
-def bridge_host() -> str:
-    return os.getenv("IDA_BRIDGE_HOST", DEFAULT_HOST)
+def listen_host() -> str:
+    return _host("IDA_BRIDGE_LISTEN_HOST")
+
+
+def connect_host() -> str:
+    return _host("IDA_BRIDGE_CONNECT_HOST")
 
 
 def bridge_port() -> int:
@@ -528,7 +534,7 @@ def bridge_port() -> int:
 
 
 def bridge_url() -> str:
-    return f"ws://{bridge_host()}:{bridge_port()}"
+    return f"ws://{connect_host()}:{bridge_port()}"
 
 
 # ---------------------------------------------------------------------------

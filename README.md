@@ -379,9 +379,10 @@ Headless only (idalib). UI IDA handles dyld module selection through its own GUI
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `IDA_BRIDGE_HOST` | `127.0.0.1` | bridge server bind host and client default host |
-| `IDA_BRIDGE_PORT` | `8765` | bridge server bind port and client default port |
-| `IDA_BRIDGE_WS_MAX_SIZE` | `67108864` | max incoming websocket message size in bytes (minimum `16384`) |
+| `IDA_BRIDGE_LISTEN_HOST` | `127.0.0.1` | address the bridge server listens on (IPv4 or hostname) |
+| `IDA_BRIDGE_CONNECT_HOST` | `127.0.0.1` | address clients connect to (IPv4 or hostname) |
+| `IDA_BRIDGE_PORT` | `8765` | port the server listens on and clients connect to |
+| `IDA_BRIDGE_MAX_MESSAGE_BYTES` | `67108864` | server-side inbound websocket message limit in bytes (minimum `16384`). Setting this on a client does not change the limit |
 | `IDA_BRIDGE_LOG_FILE` | `~/Library/Logs/ida-bridge/server.log` (macOS) / `%LOCALAPPDATA%\ida-bridge\logs\server.log` (Windows) / `$XDG_STATE_HOME/ida-bridge/logs/server.log`, default `~/.local/state/...` (Linux) | structured server log (rotated); raw stdout/stderr go to the sibling `server.out` |
 | `IDA_BRIDGE_LOG_MAX_BYTES` | `10485760` | log rotation threshold in bytes |
 | `IDA_BRIDGE_LOG_BACKUP_COUNT` | `3` | number of rotated log files to keep |

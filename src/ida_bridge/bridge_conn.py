@@ -1,4 +1,4 @@
-"""Shared WebSocket connection to the bridge server.
+"""IDA side attachment to the bridge server.
 
 Used by both UI IDA (plugin) and idalib (headless runner).
 Handles handshake, message validation, request queueing, and reconnect with backoff.
@@ -79,6 +79,8 @@ class BridgeConn:
         # Log throttling: announce retry/backoff once per disconnect cycle.
         self._retry_announced = False
         self._backoff_announced = False
+        # Until hello_ack advertises the server's limit, the protocol minimum is all we can count on.
+        self._max_message_bytes = protocol.MIN_MESSAGE_BYTES
 
     def start(self) -> None:
         """Start the WS thread (non-blocking)."""
@@ -115,7 +117,7 @@ class BridgeConn:
     def is_stopped(self) -> bool:
         return self._stopped.is_set()
 
-    def recv(self, *, timeout_s: float) -> protocol.ExecRequest | protocol.ResetRequest | protocol.QuitRequest | None:
+    def recv(self, *, timeout_s: float) -> protocol.IdaRequest | None:
         """Dequeue next request (blocking with timeout)."""
         try:
             item = self._inbox.get(timeout=timeout_s)
@@ -125,7 +127,7 @@ class BridgeConn:
         if item is QUEUE_SENTINEL:
             return None
 
-        if isinstance(item, (protocol.ExecRequest, protocol.ResetRequest, protocol.QuitRequest)):
+        if isinstance(item, protocol.IdaRequest):
             return item
 
         return None
@@ -134,7 +136,7 @@ class BridgeConn:
         """Send a message, or replace it with an error when it cannot be delivered.
 
         A request that got a response deserves an answer either way, so a response we
-        cannot serialize or that exceeds the frame cap is replaced by an error on the same
+        cannot serialize or that exceeds the message limit is replaced by an error on the same
         request. A handshake has no error form; it can only be logged and dropped.
         """
         handling_response = isinstance(msg, protocol.ResponseBase)
@@ -157,9 +159,9 @@ class BridgeConn:
                 log.error("error response not serializable", exc_info=True)
                 return
 
-        limit = protocol.ws_max_size()
+        limit = self._max_message_bytes
         if len(data) > limit:
-            log.error("message is %d bytes, over the %d byte frame limit", len(data), limit)
+            log.error("message is %d bytes, over the %d byte message limit", len(data), limit)
             if not handling_response:
                 return
             data = protocol.dump_message_json(
@@ -190,6 +192,7 @@ class BridgeConn:
         """Clear ready state and drop pending requests."""
         was_ready = self._ready.is_set()
         self._ready.clear()
+        self._max_message_bytes = protocol.MIN_MESSAGE_BYTES
 
         if was_ready:
             with self._conn_lock:
@@ -284,6 +287,7 @@ class BridgeConn:
                 # Duplicate hello_ack — protocol violation.
                 self._reject(ws)
                 return
+            self._max_message_bytes = msg.max_message_bytes
             self._ready.set()
             log.info("connected: %s", msg.client_id)
             return
@@ -297,7 +301,7 @@ class BridgeConn:
             self._reject(ws)
             return
 
-        if not isinstance(msg, (protocol.ExecRequest, protocol.ResetRequest, protocol.QuitRequest)):
+        if not isinstance(msg, protocol.IdaRequest):
             self._reject(ws)
             return
 

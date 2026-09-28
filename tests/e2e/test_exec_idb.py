@@ -26,7 +26,7 @@ def _run_exec_idb(
 ) -> subprocess.CompletedProcess[str]:
     """Run ``ida-bridge exec-idb`` as a subprocess."""
     env = os.environ.copy()
-    env["IDA_BRIDGE_HOST"] = bridge.host
+    env["IDA_BRIDGE_CONNECT_HOST"] = bridge.host
     env["IDA_BRIDGE_PORT"] = str(bridge.port)
 
     cmd = [sys.executable, "-m", "ida_bridge.cli", "exec-idb"]
@@ -43,7 +43,7 @@ def _run_exec_idb(
     if extra_args:
         cmd.extend(extra_args)
 
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
+    return subprocess.run(cmd, capture_output=True, encoding="utf-8", timeout=180, env=env)
 
 
 class TestExecIdb:

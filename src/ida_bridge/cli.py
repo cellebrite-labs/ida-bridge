@@ -58,6 +58,10 @@ def _print_usage() -> None:
 
 def main_cli() -> int:
     """Entry point for console_scripts and `python -m ida_bridge`."""
+    # Windows encodes a piped stdout/stderr in the ANSI code page: stdout raises on text
+    # outside it and stderr escapes it. Output is UTF-8 on every platform instead.
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     try:
         return main()
     except KeyboardInterrupt:

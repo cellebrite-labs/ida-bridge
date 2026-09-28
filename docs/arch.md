@@ -16,7 +16,7 @@ This file keeps only the structural facts that are easy to forget. `README.md`, 
 
 ## Components
 
-- agent client -- CLI or agent-authored code sending requests
+- agent client -- `agent_client.py`, internal to the CLI; sends one request and waits for its response
 - bridge server -- authoritative websocket router and policy layer
 - UI IDA client -- plugin-hosted runtime inside desktop IDA
 - idalib runner -- headless runtime process

@@ -6,7 +6,7 @@ Defines the websocket protocol between `agent`, `bridge`, and `ida`.
 
 - WebSocket, JSON over text frames
 - default URL: `ws://127.0.0.1:8765`
-- protocol version: `4`
+- protocol version: `5`
 - local and trusted use only
 - no compatibility guarantees for third-party clients
 
@@ -24,8 +24,8 @@ Defines the websocket protocol between `agent`, `bridge`, and `ida`.
 ## Transport
 
 - non-text frames are rejected with `ProtocolError`, then close `1002`
-- oversized inbound frames may be rejected by the websocket server with `1009`; IDA replies that exceed the cap are not sent and the target answers `RESPONSE_TOO_LARGE` instead
-- server max incoming message size defaults to `67108864` bytes and is configured by `IDA_BRIDGE_WS_MAX_SIZE`, which must be at least `16384`: below that an oversize reply's own error response would not fit either
+- a message over the limit is rejected by the receiving websocket with `1009`; IDA replies over the limit are not sent, and the target answers `RESPONSE_TOO_LARGE` instead
+- the server owns the message limit, because it receives both requests and replies. It advertises the limit as `max_message_bytes` in `hello_ack`, and clients check each message against it before sending
 
 ## Roles and client IDs
 
@@ -40,7 +40,7 @@ Clients choose `client_id` during handshake.
 ## Message model
 
 All messages include:
-- `v`: protocol version integer (`4`)
+- `v`: protocol version integer (`5`)
 - `type`: message type string
 
 All requests and responses include:
@@ -48,7 +48,7 @@ All requests and responses include:
 - `src`: sender `client_id`
 - `dst`: destination `client_id`
 
-Requests may include:
+Requests routed to IDA (`exec`, `reset`, `quit`) may include:
 - `timeout_s`
   - omitted or `null`: bridge default timeout
   - `0`: no timeout
@@ -70,7 +70,7 @@ The first message from a client must be `hello`.
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "hello",
   "role": "agent",
   "client_id": "agent-1",
@@ -87,16 +87,19 @@ Fields:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "hello_ack",
   "client_id": "agent-1",
   "bridge_id": "bridge",
+  "max_message_bytes": 67108864,
   "meta": {
     "server": "ida-bridge",
     "instance_id": "bridge-12345"
   }
 }
 ```
+
+`hello_ack.max_message_bytes` is the server's inbound message limit, in bytes, and at least `16384`. Clients must use it for send-side size checks.
 
 ## Allowed routing
 
@@ -115,7 +118,7 @@ Request:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "list",
   "id": "<uuid-v4>",
   "src": "agent-1",
@@ -131,7 +134,7 @@ Response:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "list_response",
   "id": "<uuid-v4>",
   "src": "bridge",
@@ -155,7 +158,7 @@ Stateless request:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "exec",
   "id": "<uuid-v4>",
   "src": "agent-1",
@@ -169,7 +172,7 @@ Stateful request:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "exec",
   "id": "<uuid-v4>",
   "src": "agent-1",
@@ -191,7 +194,7 @@ Success response:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "exec_response",
   "id": "<uuid-v4>",
   "src": "ida-1",
@@ -213,7 +216,7 @@ Request:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "reset",
   "id": "<uuid-v4>",
   "src": "agent-1",
@@ -242,7 +245,7 @@ Success response:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "reset_response",
   "id": "<uuid-v4>",
   "src": "ida-1",
@@ -259,7 +262,7 @@ Request:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "quit",
   "id": "<uuid-v4>",
   "src": "agent-1",
@@ -271,7 +274,7 @@ Success response:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "quit_response",
   "id": "<uuid-v4>",
   "src": "ida-1",
@@ -320,7 +323,7 @@ Codes:
 - `TIMEOUT`: bridge-side request timeout
 - `QUEUE_FULL`: IDA runtime rejected the request because its request queue is full
 - `RESPONSE_NOT_SERIALIZABLE`: IDA runtime could not JSON-serialize the response; the original payload is dropped and the target keeps serving
-- `RESPONSE_TOO_LARGE`: serialized IDA response exceeded the websocket frame limit; the original payload is dropped and the target keeps serving
+- `RESPONSE_TOO_LARGE`: serialized IDA response exceeded the websocket message limit; the original payload is dropped and the target keeps serving
 - `TARGET_INTERNAL_ERROR`: unexpected exception in the IDA request handler; the target keeps serving
 - `SESSION_CONFLICT`: target exec environment is owned by another session
 - `TAKEOVER_PENDING`: ownership transfer in progress
@@ -335,7 +338,7 @@ Example:
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "type": "error",
   "code": "INVALID_MESSAGE",
   "message": "invalid message",
@@ -368,7 +371,7 @@ Connection-level error codes:
 
 ## Correlation, ordering, and concurrency
 
-- multiple requests may be in flight concurrently
+- the bridge has many requests in flight across connections; an agent connection has at most one
 - responses may arrive out of order
 - clients must correlate by `id`
 - the bridge enforces strict response correlation by `(id, route, response type)`

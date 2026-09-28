@@ -1,4 +1,7 @@
+import asyncio
+
 import websockets
+from websockets.frames import CloseCode
 
 from ida_bridge import protocol
 from tests.harness import (
@@ -7,6 +10,7 @@ from tests.harness import (
     connected_client,
     expect_protocol_error_and_close,
     recv_msg,
+    recv_typed,
     send_msg,
 )
 
@@ -31,6 +35,7 @@ async def test_handshake_happy_path(serve_bridge: ServeBridge) -> None:
             assert ida_ack.bridge_id == server.bridge_id
             assert ida_ack.meta["server"] == "ida-bridge"
             assert ida_ack.meta["instance_id"] == "test-instance"
+            assert ida_ack.max_message_bytes == server.max_message_bytes
 
             await send_msg(agent, protocol.Hello(role=protocol.ROLE_AGENT, client_id="agent-1", meta={}))
             agent_ack = await recv_msg(agent)
@@ -39,6 +44,37 @@ async def test_handshake_happy_path(serve_bridge: ServeBridge) -> None:
             assert agent_ack.bridge_id == server.bridge_id
         finally:
             await ida.close()
+            await agent.close()
+
+
+def _exec_json_of_size(size: int) -> str:
+    req_id = protocol.new_req_id()
+    empty = protocol.ExecRequest(id=req_id, src="agent-1", dst="ida-missing", code="")
+    padding = size - len(protocol.dump_message_json(empty))
+    data = protocol.dump_message_json(
+        protocol.ExecRequest(id=req_id, src="agent-1", dst="ida-missing", code="z" * padding)
+    )
+    assert len(data) == size
+    return data
+
+
+async def test_server_enforces_the_limit_it_advertises(serve_bridge: ServeBridge) -> None:
+    async with serve_bridge(max_message_bytes=protocol.MIN_MESSAGE_BYTES * 2) as (_, url):
+        agent = await websockets.connect(url)
+        try:
+            await send_msg(agent, protocol.Hello(role=protocol.ROLE_AGENT, client_id="agent-1", meta={}))
+            ack = await recv_msg(agent)
+            assert isinstance(ack, protocol.HelloAck)
+            limit = ack.max_message_bytes
+
+            await agent.send(_exec_json_of_size(limit))
+            resp = await recv_typed(agent, protocol.ExecResponse)
+            assert resp.code == protocol.ERR_TARGET_NOT_FOUND
+
+            await agent.send("z" * (limit + 1))
+            await asyncio.wait_for(agent.wait_closed(), timeout=1.0)
+            assert agent.close_code == CloseCode.MESSAGE_TOO_BIG
+        finally:
             await agent.close()
 
 

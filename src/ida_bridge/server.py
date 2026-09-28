@@ -14,8 +14,7 @@ from websockets.exceptions import ConnectionClosed
 
 from ida_bridge import logs, protocol
 
-HOST = protocol.bridge_host()
-PORT = protocol.bridge_port()
+DEFAULT_MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 
 _DEFAULT_SERVER_LOG_MAX_BYTES = 10 * 1024 * 1024
 _DEFAULT_SERVER_LOG_BACKUP_COUNT = 3
@@ -60,8 +59,6 @@ def _configure_logging() -> None:
 
 
 log = logging.getLogger("ida-bridge")
-
-WS_MAX_SIZE = protocol.ws_max_size()
 
 
 class _AbortConnection(Exception):
@@ -109,7 +106,6 @@ class _Pending:
     agent_id: str
     ida_id: str
     req_type: str
-    resp_type: str
     deadline: float | None
     timeout_s: int | None
     takeover: _TakeoverPending | None = None
@@ -137,6 +133,10 @@ class BridgeServer:
     def bridge_id(self) -> str:
         return self._bridge_id
 
+    @property
+    def max_message_bytes(self) -> int:
+        return self._max_message_bytes
+
     def __init__(
         self,
         *,
@@ -145,8 +145,9 @@ class BridgeServer:
         timeout_tick_s: float = 0.5,
         instance_id: str | None = None,
         stateful_ttl_s: float | None = None,
+        max_message_bytes: int = DEFAULT_MAX_MESSAGE_BYTES,
     ):
-        # Defaults come from env, but tests can override everything via ctor.
+        # Most defaults come from env (main() reads the message limit); tests override via ctor.
         bridge_id = bridge_client_id if bridge_client_id is not None else os.getenv("IDA_BRIDGE_CLIENT_ID", "bridge")
         if not bridge_id:
             raise ValueError("bridge_client_id must be a non-empty string")
@@ -169,6 +170,11 @@ class BridgeServer:
         self._timeout_tick_s = float(timeout_tick_s)
         self._stateful_ttl_s = float(ttl)
         self._instance_id = instance_id or f"bridge-{os.getpid()}"
+        if max_message_bytes < protocol.MIN_MESSAGE_BYTES:
+            raise ValueError(
+                f"max_message_bytes must be >= {protocol.MIN_MESSAGE_BYTES} (IDA_BRIDGE_MAX_MESSAGE_BYTES)"
+            )
+        self._max_message_bytes = max_message_bytes
 
         self._timeout_task: asyncio.Task[None] | None = None
         self._log_prune_task: asyncio.Task[None] | None = None
@@ -247,6 +253,9 @@ class BridgeServer:
     def _restore_release_owner(self, ida_id: str, release: _ReleasePending) -> None:
         if self._ownership_by_ida.get(ida_id) == release:
             self._ownership_by_ida[ida_id] = self._owned(release.session_id)
+
+    def serve(self, host: str, port: int, **ws_kwargs: Any) -> websockets.asyncio.server.serve:
+        return websockets.serve(self.handler, host, port, max_size=self._max_message_bytes, **ws_kwargs)
 
     def start_background_tasks(self) -> None:
         """Start long-running background tasks.
@@ -580,7 +589,7 @@ class BridgeServer:
         self._by_ws[ws] = client_id
 
         if msg.role == protocol.ROLE_AGENT:
-            log.info("Agent connected: %s", client_id)
+            log.info("Agent connected: %s tool=%s pid=%s", client_id, msg.meta.get("tool"), msg.meta.get("pid"))
         elif msg.role == protocol.ROLE_IDA:
             idb = os.path.basename(msg.meta.get("idb_path", "")) or "(no idb)"
             log.info("IDA connected: %s [%s]", client_id, idb)
@@ -588,6 +597,7 @@ class BridgeServer:
         ack = protocol.HelloAck(
             client_id=client_id,
             bridge_id=self._bridge_id,
+            max_message_bytes=self._max_message_bytes,
             meta={
                 "server": "ida-bridge",
                 "instance_id": self._instance_id,
@@ -686,6 +696,7 @@ class BridgeServer:
             kind=kind,
             clients=clients,
         )
+        log.info("list [%s] %s kind=%s -> %d clients", msg.id[:8], agent_id, kind, len(clients))
         ok = await self._send_best_effort(ws, payload, context="list")
         if not ok:
             await self._disconnect(agent_id)
@@ -872,12 +883,6 @@ class BridgeServer:
 
         msg = policy.msg
 
-        expected_resp_type_by_req: dict[str, str] = {
-            protocol.MSG_EXEC: protocol.MSG_EXEC_RESPONSE,
-            protocol.MSG_RESET: protocol.MSG_RESET_RESPONSE,
-        }
-        expected_resp_type = expected_resp_type_by_req[msg.type]
-
         timeout_s = self._default_timeout_s if msg.timeout_s is None else msg.timeout_s
         if timeout_s == 0:
             deadline = None
@@ -896,7 +901,6 @@ class BridgeServer:
             agent_id=agent_id,
             ida_id=msg.dst,
             req_type=msg.type,
-            resp_type=expected_resp_type,
             deadline=deadline,
             timeout_s=timeout_s,
             takeover=policy.takeover,
@@ -991,7 +995,6 @@ class BridgeServer:
             agent_id=agent_id,
             ida_id=msg.dst,
             req_type=msg.type,
-            resp_type=protocol.MSG_QUIT_RESPONSE,
             deadline=deadline,
             timeout_s=timeout_s,
         )
@@ -1035,7 +1038,8 @@ class BridgeServer:
             return
 
         # Strict correlation.
-        if pending.ida_id != ida_id or pending.agent_id != msg.dst or pending.resp_type != msg.type:
+        expected_cls = protocol.response_type(pending.req_type)
+        if pending.ida_id != ida_id or pending.agent_id != msg.dst or not isinstance(msg, expected_cls):
             if pending.takeover is not None:
                 self._lock_takeover_unknown(pending.ida_id, pending.takeover)
             elif pending.release is not None:
@@ -1049,7 +1053,7 @@ class BridgeServer:
                     "expected": {
                         "ida_id": pending.ida_id,
                         "agent_id": pending.agent_id,
-                        "response_type": pending.resp_type,
+                        "response_type": expected_cls.model_fields["type"].default,
                     },
                     "got": {
                         "ida_id": ida_id,
@@ -1094,25 +1098,9 @@ class BridgeServer:
         code: str,
         message: str | None = None,
         trace: dict[str, Any] | None = None,
-    ) -> protocol.Message:
-        if req_type == protocol.MSG_EXEC:
-            return protocol.ExecResponse(
-                id=req_id, src=self._bridge_id, dst=dst, ok=False, code=code, message=message, trace=trace, result=None
-            )
-        if req_type == protocol.MSG_RESET:
-            return protocol.ResetResponse(
-                id=req_id, src=self._bridge_id, dst=dst, ok=False, code=code, message=message, trace=trace
-            )
-        if req_type == protocol.MSG_QUIT:
-            return protocol.QuitResponse(
-                id=req_id, src=self._bridge_id, dst=dst, ok=False, code=code, message=message, trace=trace
-            )
-        # Should not happen: callers pass only known request types.
-        return protocol.ProtocolError(
-            code=protocol.ERR_INVALID_MESSAGE,
-            message="unsupported request type",
-            trace={"type": req_type, "id": req_id},
-        )
+    ) -> protocol.ResponseBase:
+        response_cls = protocol.response_type(req_type)
+        return response_cls(id=req_id, src=self._bridge_id, dst=dst, ok=False, code=code, message=message, trace=trace)
 
     async def _send_best_effort(
         self,
@@ -1156,16 +1144,19 @@ class BridgeServer:
 async def main() -> None:
     _configure_logging()
 
-    server = BridgeServer()
+    host = protocol.listen_host()
+    port = protocol.bridge_port()
+    max_message_bytes = int(os.getenv("IDA_BRIDGE_MAX_MESSAGE_BYTES", DEFAULT_MAX_MESSAGE_BYTES))
+    server = BridgeServer(max_message_bytes=max_message_bytes)
     server.start_background_tasks()
 
-    log.info("Starting server on %s", protocol.bridge_url())
+    log.info("Starting server on %s:%s", host, port)
     # IDA plugins run exec on IDA's main thread while a background thread
     # handles WebSocket I/O.  Under heavy load Python's GIL can starve the
     # WS thread long enough to miss the default 20s pong deadline.  60s
     # accommodates these bursts while still detecting genuinely dead
     # connections.
-    async with websockets.serve(server.handler, HOST, PORT, max_size=WS_MAX_SIZE, ping_timeout=60):
+    async with server.serve(host, port, ping_timeout=60):
         try:
             await asyncio.Future()
         finally:

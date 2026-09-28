@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ida_bridge.agent_client import BridgeDisconnected
+from ida_bridge.agent_client import BridgeDisconnected, BridgeUnreachable, RequestTooLarge
 from ida_bridge.cli_exec_idb import main
 from ida_bridge.protocol import ExecResponse, new_req_id
 from ida_bridge.supervisor.commands import IdalibStartResult, StartError
@@ -208,17 +208,25 @@ class TestJsonSuppression:
 
 
 class TestConnectionErrors:
-    def test_connection_refused(self, capsys):
-        rc, _ = _run_with(_patches(exec_err=ConnectionRefusedError()), _IDB_ARGS)
+    def test_bridge_unreachable(self, capsys):
+        rc, _ = _run_with(_patches(exec_err=BridgeUnreachable("cannot connect to bridge at ws://h:1")), _IDB_ARGS)
         assert rc == 2
-        assert "bridge connection lost" in capsys.readouterr().err
+        assert "cannot connect to bridge" in capsys.readouterr().err
 
     def test_bridge_disconnected(self, capsys):
         rc, _ = _run_with(_patches(exec_err=BridgeDisconnected("gone")), _IDB_ARGS)
         assert rc == 2
         err = capsys.readouterr().err
-        assert "bridge disconnected" in err
-        assert "crashed" in err
+        assert "bridge disconnected: gone" in err
+        assert "server log" in err
+
+    def test_request_too_large(self, capsys):
+        rc, _ = _run_with(_patches(exec_err=RequestTooLarge("request is 9 bytes")), _IDB_ARGS)
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "request is 9 bytes" in err
+        assert "shrink --sql/--code/--file" in err
+        assert "disconnected" not in err
 
 
 class TestArgValidation:

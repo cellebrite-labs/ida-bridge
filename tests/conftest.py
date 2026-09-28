@@ -4,9 +4,8 @@ import os
 
 import pytest
 import pytest_asyncio
-import websockets
 
-from ida_bridge.server import BridgeServer
+from ida_bridge.server import DEFAULT_MAX_MESSAGE_BYTES, BridgeServer
 from tests.harness import ServeBridge
 
 
@@ -62,6 +61,7 @@ def serve_bridge() -> ServeBridge:
         ping_interval: float | None = None,
         ping_timeout: float | None = None,
         stateful_ttl_s: float | None = None,
+        max_message_bytes: int = DEFAULT_MAX_MESSAGE_BYTES,
     ) -> AsyncIterator[tuple[BridgeServer, str]]:
         server = BridgeServer(
             bridge_client_id=bridge_client_id,
@@ -69,6 +69,7 @@ def serve_bridge() -> ServeBridge:
             timeout_tick_s=timeout_tick_s,
             instance_id=instance_id,
             stateful_ttl_s=stateful_ttl_s,
+            max_message_bytes=max_message_bytes,
         )
         server.start_background_tasks()
         ws_kwargs: dict = {}
@@ -77,7 +78,7 @@ def serve_bridge() -> ServeBridge:
         if ping_timeout is not None:
             ws_kwargs["ping_timeout"] = ping_timeout
         try:
-            async with websockets.serve(server.handler, "127.0.0.1", 0, **ws_kwargs) as ws_server:
+            async with server.serve("127.0.0.1", 0, **ws_kwargs) as ws_server:
                 port = ws_server.sockets[0].getsockname()[1]
                 url = f"ws://127.0.0.1:{port}"
                 yield server, url

@@ -2,9 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+- The server handshake ack advertises the server's websocket message limit. Clients use it for send-side checks ([#11](https://github.com/cellebrite-labs/ida-bridge/issues/11)).
+
+### Changed
+- Protocol version bumped to 5.
+- `IDA_BRIDGE_WS_MAX_SIZE` is renamed `IDA_BRIDGE_MAX_MESSAGE_BYTES` and applies to the server only.
+- `IDA_BRIDGE_HOST` is split into `IDA_BRIDGE_LISTEN_HOST` (server) and `IDA_BRIDGE_CONNECT_HOST` (clients).
+
 ### Fixed
 - Unserializable IDA responses and unexpected request-handler exceptions no longer take down the target. They reply `RESPONSE_NOT_SERIALIZABLE` / `TARGET_INTERNAL_ERROR` and keep serving ([#8](https://github.com/cellebrite-labs/ida-bridge/issues/8)).
 - Oversized IDA responses no longer close the websocket with `1009`. They reply `RESPONSE_TOO_LARGE` and keep serving ([#7](https://github.com/cellebrite-labs/ida-bridge/issues/7)).
+- Linux: `supervisor start-ui` no longer keeps a caller's captured output open until IDA exits.
+- Windows: piped CLI output is UTF-8, so non-ANSI text no longer crashes stdout or gets escaped on stderr.
 
 ## [0.6.0] - 2026-09-03
 

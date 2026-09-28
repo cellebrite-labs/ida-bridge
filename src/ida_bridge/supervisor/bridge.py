@@ -3,14 +3,13 @@
 import asyncio
 from collections.abc import Callable
 import logging
-import os
 
 from ida_bridge import protocol
 from ida_bridge.agent_client import AgentClient, open_agent_client
 
 log = logging.getLogger(__name__)
 
-_CLIENT_ID = f"ida-sup-{os.getpid()}"
+_META = {"tool": "supervisor"}
 
 type MatchFn = Callable[[protocol.ClientInfo], bool]
 type AbortFn = Callable[[], bool]
@@ -22,7 +21,7 @@ async def bridge_quit(client_id: str) -> bool:
     Does not require session ownership. Does not save —
     call ``bridge_save`` first if persistence is needed.
     """
-    async with open_agent_client(client_id=_CLIENT_ID) as client:
+    async with open_agent_client(meta=_META) as client:
         resp = await client.quit(client_id, timeout_s=10)
         return bool(resp.ok)
 
@@ -33,7 +32,7 @@ async def bridge_save(client_id: str, *, session_id: str | None = None, persist:
     Returns the bool result of ``idb.save()``.
     Raises on exec/connection failure.
     """
-    async with open_agent_client(client_id=_CLIENT_ID) as client:
+    async with open_agent_client(meta=_META) as client:
         resp = await client.exec(
             client_id,
             "_result_ = idb.save()",
@@ -52,7 +51,7 @@ async def list_ida_clients() -> list[protocol.ClientInfo] | None:
     Returns None if the bridge responds but does not provide a valid client list.
     Raises on connection/protocol errors.
     """
-    async with open_agent_client(client_id=_CLIENT_ID) as client:
+    async with open_agent_client(meta=_META) as client:
         resp = await client.list(kind=protocol.LIST_KIND_IDA)
         if not resp.ok or resp.clients is None:
             return None
@@ -85,7 +84,7 @@ async def poll_for_new_client(
     """
     deadline = asyncio.get_event_loop().time() + timeout_s
 
-    async with open_agent_client(client_id=_CLIENT_ID) as client:
+    async with open_agent_client(meta=_META) as client:
         while asyncio.get_event_loop().time() < deadline:
             if abort is not None and abort():
                 return None
