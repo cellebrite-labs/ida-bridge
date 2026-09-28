@@ -155,7 +155,3 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--takeover and --release are mutually exclusive")
         return _run(cmd_reset(args))
     return 0
-
-
-if __name__ == "__main__":
-    main()

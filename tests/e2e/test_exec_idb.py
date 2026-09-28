@@ -43,7 +43,7 @@ def _run_exec_idb(
     if extra_args:
         cmd.extend(extra_args)
 
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
+    return subprocess.run(cmd, capture_output=True, encoding="utf-8", timeout=180, env=env)
 
 
 class TestExecIdb:

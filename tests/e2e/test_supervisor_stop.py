@@ -31,7 +31,7 @@ def _run_supervisor_stop(
     return subprocess.run(
         [sys.executable, "-m", "ida_bridge.cli", "supervisor", "stop", target],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         timeout=30,
         env=env,
     )
