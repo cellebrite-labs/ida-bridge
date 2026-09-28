@@ -105,6 +105,8 @@ _ERROR_HINTS: dict[str, str] = {
     ),
     protocol.ERR_TAKEOVER_PENDING: "a takeover reset is in flight. Wait and retry.",
     protocol.ERR_SESSION_LOCKED: "reconnect the target to clear the lock.",
+    protocol.ERR_REMOTE_DENIED: "run the command on the bridge host directly.",
+    protocol.ERR_REMOTE_FAILED: "the command did not run; see the server log on the bridge host.",
     protocol.ERR_SESSION_CONFLICT: (
         "use `--stateful --session-id <sid>` with the owning session, or run "
         "`ida-bridge reset <target> --session-id <sid> --takeover` to steal ownership."
@@ -143,7 +145,7 @@ def format_client_list_human(clients) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _format_status_block(cmd: str, resp: protocol.ResponseBase) -> str:
+def format_status_block(cmd: str, resp: protocol.ResponseBase) -> str:
     """Format the command status line and error metadata."""
     parts: list[str] = [f"{cmd}: {'ok' if resp.ok else 'error'}\n"]
     if resp.ok:
@@ -219,7 +221,7 @@ def print_exec_human(resp: protocol.ExecResponse) -> None:
     if resp.stderr:
         sections.append(format_human_section("stderr", resp.stderr))
 
-    _print_human(_format_status_block("exec", resp), sections)
+    _print_human(format_status_block("exec", resp), sections)
 
 
 def print_reset_human(resp: protocol.ResetResponse) -> None:
@@ -227,4 +229,4 @@ def print_reset_human(resp: protocol.ResetResponse) -> None:
     sections = []
     if resp.trace is not None:
         sections.append(_bridge_trace_section(resp.trace))
-    _print_human(_format_status_block("reset", resp), sections)
+    _print_human(format_status_block("reset", resp), sections)

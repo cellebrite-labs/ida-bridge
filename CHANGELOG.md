@@ -4,6 +4,7 @@
 
 ### Added
 - The server handshake ack advertises the server's websocket message limit. Clients use it for send-side checks ([#11](https://github.com/cellebrite-labs/ida-bridge/issues/11)).
+- `ida-bridge remote -- <command>` runs an `ida-bridge` command on the bridge host, for agents in a sandbox ([#9](https://github.com/cellebrite-labs/ida-bridge/issues/9)).
 
 ### Changed
 - Protocol version bumped to 5.

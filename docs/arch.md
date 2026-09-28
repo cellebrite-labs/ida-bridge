@@ -30,7 +30,8 @@ Bridge:
 - enforces request and response correlation
 - enforces exec-environment ownership policy
 - tracks pending requests and timeouts
-- does not spawn or execute IDA
+- runs `ida-bridge` CLI commands on its host for `remote`
+- does not manage IDA processes
 
 IDA runtime:
 - owns `_exec_env`
@@ -85,5 +86,5 @@ Ownership and lifecycle are separate:
 Local and trusted use only.
 
 - no authentication
-- code execution inside IDA
+- code execution inside IDA, and CLI commands on the bridge host through `remote`
 - do not expose the bridge to untrusted networks
