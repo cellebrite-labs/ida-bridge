@@ -38,6 +38,12 @@ Multiple IDA instances can connect to the bridge, but you target a specific inst
 - Save through an existing stateful session: `ida-bridge supervisor save <client_id> --stateful --session-id <sid>`.
 - Diagnose a launch that fails to connect: open the log file at the path printed in the error message.
 
+### Sandboxed agent
+- If IDA and the target files are outside the sandbox, prefix commands that start, save, or stop IDA with `ida-bridge remote --`: `supervisor ...` and `exec-idb`, e.g. `ida-bridge remote -- supervisor start-idalib --idb /host/target.i64`.
+- Run `list`, `exec`, and `reset` directly; `exec -f` then reads a sandbox file.
+- Use absolute host paths. A disconnect or Ctrl-C does not stop the host command; check before retrying it.
+- Read `references/remote.md` for setup and failure handling.
+
 ## Execution
 
 ### Prefer SQL

@@ -99,15 +99,15 @@ Fields:
 }
 ```
 
-`hello_ack.max_message_bytes` is the server's inbound message limit, in bytes, and at least `16384`. Clients must use it for send-side size checks.
+`hello_ack.max_message_bytes` is the server's inbound message limit, in bytes, and at least `16384`. Clients must use it for send-side size checks. It caps every message the bridge receives; replies the bridge creates itself (`list_response`, `remote_response`, errors) are not capped.
 
 ## Allowed routing
 
-- agent -> bridge: `list`
+- agent -> bridge: `list`, `remote`
 - agent -> ida: `exec`, `reset`, `quit`
 - ida -> agent: `exec_response`, `reset_response`, `quit_response`
 - ida -> bridge after handshake: not allowed
-- bridge -> agent: `list_response`
+- bridge -> agent: `list_response`, `remote_response`
 - bridge -> agent: bridge-originated request failures as `exec_response`, `reset_response`, or `quit_response`
 
 ## Operations
@@ -149,6 +149,45 @@ Response:
 ```
 
 `clients` is sorted deterministically by `client_id`.
+
+### `remote`
+
+Runs an `ida-bridge` CLI command on the bridge host. No bridge timeout applies: the bridge replies when the command exits. If the requester disconnects first, the command keeps running and the reply is dropped.
+
+Request:
+
+```json
+{
+  "v": 5,
+  "type": "remote",
+  "id": "<uuid-v4>",
+  "src": "agent-1",
+  "dst": "bridge",
+  "argv": ["supervisor", "start-idalib", "--idb", "/host/target.i64", "--json"]
+}
+```
+
+Response:
+
+```json
+{
+  "v": 5,
+  "type": "remote_response",
+  "id": "<uuid-v4>",
+  "src": "bridge",
+  "dst": "agent-1",
+  "ok": true,
+  "exit_code": 0,
+  "stdout": "...",
+  "stderr": ""
+}
+```
+
+`ok = true` means the command ran; `exit_code` is its exit status (negative for a signal on a POSIX host). `stdout` and `stderr` are the command's output, decoded as UTF-8 with `\n` line endings.
+
+Codes when `ok = false`:
+- `REMOTE_DENIED`: `remote` and `server` commands are refused
+- `REMOTE_FAILED`: the host CLI could not be started
 
 ### `exec`
 
@@ -395,5 +434,5 @@ The bridge enforces request timeouts for agent -> ida routed requests.
 ## Security
 
 - no authentication or authorization
-- messages can request code execution inside IDA
+- messages can request code execution inside IDA and CLI commands on the bridge host
 - do not expose the bridge to untrusted networks

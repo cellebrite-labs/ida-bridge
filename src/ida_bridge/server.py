@@ -12,7 +12,7 @@ import websockets
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed
 
-from ida_bridge import logs, protocol
+from ida_bridge import logs, protocol, remote
 
 DEFAULT_MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 
@@ -633,6 +633,10 @@ class BridgeServer:
             await self._handle_list(ws, client_id, msg)
             return
 
+        if isinstance(msg, protocol.RemoteRequest):
+            await self._handle_remote(ws, client_id, msg)
+            return
+
         await self._protocol_error(
             ws,
             code=protocol.ERR_UNSUPPORTED_MESSAGE,
@@ -699,6 +703,38 @@ class BridgeServer:
         log.info("list [%s] %s kind=%s -> %d clients", msg.id[:8], agent_id, kind, len(clients))
         ok = await self._send_best_effort(ws, payload, context="list")
         if not ok:
+            await self._disconnect(agent_id)
+
+    async def _handle_remote(self, ws: ServerConnection, agent_id: str, msg: protocol.RemoteRequest) -> None:
+        # Awaited inline: an agent connection has at most one request in flight, so waiting
+        # for the command holds up nothing else. A requester that leaves does not stop it.
+        reason = remote.denied_reason(msg.argv)
+        if reason is not None:
+            log.info("remote [%s] %s denied: %s", msg.id[:8], agent_id, msg.argv)
+            payload = protocol.error_for_request(msg, code=protocol.ERR_REMOTE_DENIED, message=reason)
+        else:
+            log.info("remote [%s] %s argv=%s", msg.id[:8], agent_id, msg.argv)
+            try:
+                exit_code, stdout, stderr = await remote.run(msg.argv)
+            except (OSError, ValueError) as exc:
+                log.exception("remote [%s] could not run the host CLI", msg.id[:8])
+                message = f"could not run the host CLI: {type(exc).__name__}: {exc}"
+                payload = protocol.error_for_request(msg, code=protocol.ERR_REMOTE_FAILED, message=message)
+            else:
+                log.info("remote [%s] exit_code=%s", msg.id[:8], exit_code)
+                payload = protocol.RemoteResponse(
+                    id=msg.id,
+                    src=self._bridge_id,
+                    dst=agent_id,
+                    ok=True,
+                    exit_code=exit_code,
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+
+        ok = await self._send_best_effort(ws, payload, context="remote")
+        if not ok:
+            log.info("remote [%s] result dropped: %s is gone", msg.id[:8], agent_id)
             await self._disconnect(agent_id)
 
     def _apply_exec_env_policy(self, msg: protocol.ExecRequest | protocol.ResetRequest) -> _ExecEnvPolicy:

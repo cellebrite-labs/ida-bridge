@@ -334,6 +334,25 @@ Use `exec --stateful --session-id <sid>` only when later calls need variables, i
 
 Use `reset <target> --session-id <sid>` to clear a stateful environment while keeping ownership. Use `reset <target> --session-id <sid> --release` when finished. Use `reset <target> --session-id <new-sid> --takeover` to intentionally replace another owner.
 
+## Access from a sandbox
+
+When an agent in a sandbox (a container or VM) can reach the bridge over the network, but not IDA or the files on the bridge's machine, `ida-bridge remote -- <command>` runs an `ida-bridge` command on the machine where the bridge runs.
+
+```bash
+ida-bridge remote -- supervisor start-idalib --idb /host/target.i64
+ida-bridge remote -- exec <client_id> -f /host/script.py
+```
+
+Setup:
+- host: the bridge listens on an address the sandbox can reach (`IDA_BRIDGE_LISTEN_HOST`). If that is one specific address rather than `0.0.0.0`, set `IDA_BRIDGE_CONNECT_HOST` to it for the bridge too.
+- sandbox: `IDA_BRIDGE_CONNECT_HOST` and `IDA_BRIDGE_PORT` point at the bridge.
+
+Behavior:
+- The command runs with the bridge's environment and working directory, without a shell, and no files are transferred: use absolute host paths.
+- `remote` and `server` commands are refused.
+- Output arrives when the command exits, with its exit code.
+- Disconnect or Ctrl-C stops the wait, not the command, so check before retrying. See [remote](skills/ida-bridge/references/remote.md).
+
 ## Why SQL
 
 Agents have outdated knowledge of the IDAPython API. They write IDAPython for IDA 8.x.

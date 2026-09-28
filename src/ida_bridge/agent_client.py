@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 import contextlib
 from dataclasses import dataclass
 import os
@@ -181,6 +182,10 @@ class AgentClient:
             dst=dst,
             timeout_s=timeout_s,
         )
+        return await self._request(req)
+
+    async def remote(self, argv: Sequence[str]) -> protocol.RemoteResponse:
+        req = protocol.RemoteRequest(id=protocol.new_req_id(), src=self._client_id, dst=self.bridge_id, argv=list(argv))
         return await self._request(req)
 
     async def _protocol_violation(self, detail: str) -> NoReturn:

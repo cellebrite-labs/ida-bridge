@@ -52,6 +52,9 @@ MSG_HELLO_ACK = "hello_ack"
 MSG_LIST = "list"
 MSG_LIST_RESPONSE = "list_response"
 
+MSG_REMOTE = "remote"
+MSG_REMOTE_RESPONSE = "remote_response"
+
 MSG_EXEC = "exec"
 MSG_EXEC_RESPONSE = "exec_response"
 
@@ -66,6 +69,8 @@ MessageType = Literal[
     MSG_HELLO_ACK,
     MSG_LIST,
     MSG_LIST_RESPONSE,
+    MSG_REMOTE,
+    MSG_REMOTE_RESPONSE,
     MSG_EXEC,
     MSG_EXEC_RESPONSE,
     MSG_RESET,
@@ -114,6 +119,8 @@ ERR_SESSION_CONFLICT = "SESSION_CONFLICT"
 ERR_TAKEOVER_PENDING = "TAKEOVER_PENDING"
 ERR_RELEASE_PENDING = "RELEASE_PENDING"
 ERR_SESSION_LOCKED = "SESSION_LOCKED"
+ERR_REMOTE_DENIED = "REMOTE_DENIED"
+ERR_REMOTE_FAILED = "REMOTE_FAILED"
 
 
 class BaseMessage(BaseModel):
@@ -341,6 +348,34 @@ class ListResponse(ResponseBase):
 
 
 # -----------------
+# remote
+# -----------------
+
+
+class RemoteRequest(RequestBase):
+    """Run an ida-bridge CLI command on the bridge host."""
+
+    type: Literal[MSG_REMOTE] = MSG_REMOTE
+
+    argv: list[str]
+
+
+class RemoteResponse(ResponseBase):
+    type: Literal[MSG_REMOTE_RESPONSE] = MSG_REMOTE_RESPONSE
+
+    # ok says the command ran, whatever its exit code.
+    exit_code: int | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_remote_fields(self):
+        for field in ("exit_code", "stdout", "stderr"):
+            self._enforce_ok(field, require_when_ok=True)
+        return self
+
+
+# -----------------
 # exec
 # -----------------
 
@@ -421,6 +456,8 @@ Message = Annotated[
     | HelloAck
     | ListRequest
     | ListResponse
+    | RemoteRequest
+    | RemoteResponse
     | ExecRequest
     | ExecResponse
     | ResetRequest
@@ -446,6 +483,7 @@ def parse_message_json(raw: str) -> Message:
 
 _RESPONSE_FOR_REQUEST: dict[str, type[ResponseBase]] = {
     MSG_LIST: ListResponse,
+    MSG_REMOTE: RemoteResponse,
     MSG_EXEC: ExecResponse,
     MSG_RESET: ResetResponse,
     MSG_QUIT: QuitResponse,
