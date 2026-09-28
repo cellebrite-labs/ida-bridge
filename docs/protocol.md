@@ -48,7 +48,7 @@ All requests and responses include:
 - `src`: sender `client_id`
 - `dst`: destination `client_id`
 
-Requests may include:
+Requests routed to IDA (`exec`, `reset`, `quit`) may include:
 - `timeout_s`
   - omitted or `null`: bridge default timeout
   - `0`: no timeout

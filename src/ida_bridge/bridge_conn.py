@@ -117,7 +117,7 @@ class BridgeConn:
     def is_stopped(self) -> bool:
         return self._stopped.is_set()
 
-    def recv(self, *, timeout_s: float) -> protocol.ExecRequest | protocol.ResetRequest | protocol.QuitRequest | None:
+    def recv(self, *, timeout_s: float) -> protocol.IdaRequest | None:
         """Dequeue next request (blocking with timeout)."""
         try:
             item = self._inbox.get(timeout=timeout_s)
@@ -127,7 +127,7 @@ class BridgeConn:
         if item is QUEUE_SENTINEL:
             return None
 
-        if isinstance(item, (protocol.ExecRequest, protocol.ResetRequest, protocol.QuitRequest)):
+        if isinstance(item, protocol.IdaRequest):
             return item
 
         return None
@@ -301,7 +301,7 @@ class BridgeConn:
             self._reject(ws)
             return
 
-        if not isinstance(msg, (protocol.ExecRequest, protocol.ResetRequest, protocol.QuitRequest)):
+        if not isinstance(msg, protocol.IdaRequest):
             self._reject(ws)
             return
 

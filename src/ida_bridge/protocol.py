@@ -228,7 +228,13 @@ class RoutedBase(BaseMessage):
 
 
 class RequestBase(RoutedBase):
-    # Timeout in seconds (integer) for bridge-routed requests.
+    pass
+
+
+class IdaRequest(RequestBase):
+    """A request the bridge routes to an IDA client."""
+
+    # Timeout in seconds (integer), enforced by the bridge.
     # - null/absent: use bridge default
     # - 0: no timeout
     # - >0: explicit timeout
@@ -339,7 +345,7 @@ class ListResponse(ResponseBase):
 # -----------------
 
 
-class ExecRequest(RequestBase):
+class ExecRequest(IdaRequest):
     type: Literal[MSG_EXEC] = MSG_EXEC
 
     session_id: NonBlankStr | None = None
@@ -379,7 +385,7 @@ class ExecResponse(ResponseBase):
 # -----------------
 
 
-class ResetRequest(RequestBase):
+class ResetRequest(IdaRequest):
     type: Literal[MSG_RESET] = MSG_RESET
 
     session_id: NonBlankStr
@@ -402,7 +408,7 @@ class ResetResponse(ResponseBase):
 # -----------------
 
 
-class QuitRequest(RequestBase):
+class QuitRequest(IdaRequest):
     type: Literal[MSG_QUIT] = MSG_QUIT
 
 

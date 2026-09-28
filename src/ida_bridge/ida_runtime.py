@@ -255,7 +255,7 @@ def collect_meta(*, client_id: str, runtime: str) -> dict[str, Any]:
 
 
 def _internal_error_response(
-    msg: protocol.ExecRequest | protocol.ResetRequest | protocol.QuitRequest,
+    msg: protocol.IdaRequest,
     exc: BaseException,
 ) -> protocol.Message:
     """Error response for a request our own handling failed on. Only exec carries a traceback."""
@@ -306,7 +306,7 @@ class RequestHandler:
         idb = self._exec_env.get("idb")
         return idb is not None and idb.quit_requested
 
-    def handle(self, msg: protocol.ExecRequest | protocol.ResetRequest | protocol.QuitRequest) -> None:
+    def handle(self, msg: protocol.IdaRequest) -> None:
         """Dispatch one request. Never raises: an internal error is logged and answered.
 
         Both runtimes call this, so neither can lose a request or die on our bug.

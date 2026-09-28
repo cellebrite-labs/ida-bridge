@@ -112,6 +112,24 @@ def test_models_are_strict_extra_forbidden() -> None:
     assert any(e.get("type") == "extra_forbidden" for e in errors)
 
 
+def test_a_bridge_local_request_has_no_timeout() -> None:
+    raw = json.dumps(
+        {
+            "v": protocol.PROTO_VERSION,
+            "type": protocol.MSG_LIST,
+            "id": UUID_V4,
+            "src": "agent-1",
+            "dst": "bridge",
+            "kind": protocol.LIST_KIND_IDA,
+            "timeout_s": 5,
+        }
+    )
+    with pytest.raises(ValidationError) as excinfo:
+        protocol.parse_message_json(raw)
+
+    assert [e["loc"][-1] for e in excinfo.value.errors() if e["type"] == "extra_forbidden"] == ["timeout_s"]
+
+
 def test_exec_request_defaults_to_stateless() -> None:
     msg = {
         "v": protocol.PROTO_VERSION,
